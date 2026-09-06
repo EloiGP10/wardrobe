@@ -41,6 +41,16 @@ async function sqlOne(query, params = []) {
   return rows[0] || null;
 }
 
+function getUserId(req) {
+  return req.headers["x-user-id"] || null;
+}
+
+function requireUser(req) {
+  const uid = getUserId(req);
+  if (!uid) throw Object.assign(new Error("Unauthorized"), { status: 401 });
+  return uid;
+}
+
 function mapItem(g) {
   return {
     id: g.id, name: g.name, part: g.part, color: g.color,
@@ -283,24 +293,29 @@ async function apiStatus(req, res) {
 }
 
 async function apiGetGarments(req, res) {
-  const rows = await sql("SELECT * FROM items WHERE active = true ORDER BY created_at DESC");
+  const uid = requireUser(req);
+  const rows = await sql("SELECT * FROM items WHERE active = true AND user_id = $1 ORDER BY created_at DESC", [uid]);
   json(res, 200, rows.map(mapItem));
 }
 
 async function apiGetGarment(req, res, id) {
-  const g = await sqlOne("SELECT * FROM items WHERE id = $1", [id]);
+  const uid = requireUser(req);
+  const g = await sqlOne("SELECT * FROM items WHERE id = $1 AND user_id = $2", [id, uid]);
   if (!g) return json(res, 404, { error: "Not found" });
   json(res, 200, mapItem(g));
 }
 
 async function apiUpdateGarment(req, res, id) {
+  const uid = requireUser(req);
+  const existing = await sqlOne("SELECT * FROM items WHERE id = $1 AND user_id = $2", [id, uid]);
+  if (!existing) return json(res, 404, { error: "Not found" });
   const input = await parseBody(req);
   await sql(`UPDATE items SET
     name = $1, part = $2, color = $3, secondary_color = $4, palette = $5, tags = $6,
     gender = $7, style = $8, season = $9, occasion = $10, material = $11,
     pattern = $12, fit = $13, neckline = $14, length = $15, details = $16,
     weather = $17, warmth_level = $18, formality_level = $19, trend_score = $20,
-    brand = $21, description = $22 WHERE id = $23`, [
+    brand = $21, description = $22 WHERE id = $23 AND user_id = $24`, [
     (input.name || "").trim().slice(0, 120) || "New piece",
     input.part || "upperbody",
     input.color || null,
@@ -323,18 +338,20 @@ async function apiUpdateGarment(req, res, id) {
     input.trendScore || null,
     input.brand || null,
     input.description || null,
-    id,
+    id, uid,
   ]);
   const g = await sqlOne("SELECT * FROM items WHERE id = $1", [id]);
   json(res, 200, mapItem(g));
 }
 
 async function apiDeleteGarment(req, res, id) {
-  await sql("UPDATE items SET active = false WHERE id = $1", [id]);
+  const uid = requireUser(req);
+  await sql("UPDATE items SET active = false WHERE id = $1 AND user_id = $2", [id, uid]);
   json(res, 200, { deleted: true, id });
 }
 
 async function apiImportGarment(req, res) {
+  const uid = requireUser(req);
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
@@ -354,8 +371,8 @@ async function apiImportGarment(req, res) {
   const rows = await sql(`INSERT INTO items
     (slug, name, part, color, secondary_color, palette, tags, image_url, thumbnail_url,
      gender, style, season, occasion, material, pattern, fit, neckline, length,
-     details, weather, warmth_level, formality_level, trend_score, brand, description)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+     details, weather, warmth_level, formality_level, trend_score, brand, description, user_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
     RETURNING *`, [
     slug,
     metadata.name || "Imported piece",
@@ -382,6 +399,7 @@ async function apiImportGarment(req, res) {
     metadata.trend_score || null,
     metadata.brand || null,
     metadata.description || null,
+    uid,
   ]);
 
   const g = rows[0];
@@ -389,7 +407,8 @@ async function apiImportGarment(req, res) {
 }
 
 async function apiGetOutfits(req, res) {
-  const rows = await sql("SELECT * FROM outfits ORDER BY created_at DESC");
+  const uid = requireUser(req);
+  const rows = await sql("SELECT * FROM outfits WHERE user_id = $1 ORDER BY created_at DESC", [uid]);
   const result = await Promise.all(rows.map(async o => {
     const items = await sql(
       "SELECT item_id FROM outfit_items WHERE outfit_id = $1 ORDER BY position",
@@ -408,18 +427,19 @@ async function apiGetOutfits(req, res) {
 }
 
 async function apiCreateOutfit(req, res) {
+  const uid = requireUser(req);
   const input = await parseBody(req);
   const rows = await sql(
-    `INSERT INTO outfits (name, occasion, season, weather, formality_level, style, score)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    `INSERT INTO outfits (name, occasion, season, weather, formality_level, style, score, user_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
     [input.name || "New outfit", input.occasion || null, input.season || null,
-     input.weather || [], input.formalityLevel || null, input.style || [], input.score || null]
+     input.weather || [], input.formalityLevel || null, input.style || [], input.score || null, uid]
   );
   const outfit = rows[0];
   if (Array.isArray(input.garmentIds) && input.garmentIds.length) {
     await sql(
-      `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3})`).join(",")}`,
-      input.garmentIds.flatMap(gid => [outfit.id, gid])
+      `INSERT INTO outfit_items (outfit_id, item_id, position, user_id) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3},$${input.garmentIds.length + 4})`).join(",")}`,
+      input.garmentIds.flatMap(gid => [outfit.id, gid, uid])
     );
   }
   json(res, 201, {
@@ -431,18 +451,21 @@ async function apiCreateOutfit(req, res) {
 }
 
 async function apiUpdateOutfit(req, res, id) {
+  const uid = requireUser(req);
+  const existing = await sqlOne("SELECT * FROM outfits WHERE id = $1 AND user_id = $2", [id, uid]);
+  if (!existing) return json(res, 404, { error: "Not found" });
   const input = await parseBody(req);
   await sql(
-    `UPDATE outfits SET name=$1, occasion=$2, season=$3, weather=$4, formality_level=$5, style=$6, score=$7 WHERE id=$8`,
+    `UPDATE outfits SET name=$1, occasion=$2, season=$3, weather=$4, formality_level=$5, style=$6, score=$7 WHERE id=$8 AND user_id=$9`,
     [input.name, input.occasion || null, input.season || null,
-     input.weather || [], input.formalityLevel || null, input.style || [], input.score || null, id]
+     input.weather || [], input.formalityLevel || null, input.style || [], input.score || null, id, uid]
   );
   if ("garmentIds" in input) {
-    await sql("DELETE FROM outfit_items WHERE outfit_id = $1", [id]);
+    await sql("DELETE FROM outfit_items WHERE outfit_id = $1 AND user_id = $2", [id, uid]);
     if (Array.isArray(input.garmentIds) && input.garmentIds.length) {
       await sql(
-        `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3})`).join(",")}`,
-        input.garmentIds.flatMap(gid => [id, gid])
+        `INSERT INTO outfit_items (outfit_id, item_id, position, user_id) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3},$${input.garmentIds.length + 4})`).join(",")}`,
+        input.garmentIds.flatMap(gid => [id, gid, uid])
       );
     }
   }
@@ -457,18 +480,51 @@ async function apiUpdateOutfit(req, res, id) {
 }
 
 async function apiDeleteOutfit(req, res, id) {
-  await sql("DELETE FROM outfit_items WHERE outfit_id = $1", [id]);
-  await sql("DELETE FROM outfits WHERE id = $1", [id]);
+  const uid = requireUser(req);
+  await sql("DELETE FROM outfit_items WHERE outfit_id = $1 AND user_id = $2", [id, uid]);
+  await sql("DELETE FROM outfits WHERE id = $1 AND user_id = $2", [id, uid]);
   json(res, 200, { deleted: true, id });
 }
 
 async function apiSuggestOutfits(req, res) {
+  const uid = getUserId(req);
   const url = new URL(req.url, "http://localhost");
   const season = url.searchParams.get("season") || "mild";
-  const rows = await sql("SELECT * FROM items WHERE active = true");
-  if (!rows.length) return json(res, 200, { outfits: [], message: "Add garments first" });
+  const userFilter = uid ? "AND user_id = $1" : "";
+  const params = uid ? [uid] : [];
+  const rows = await sql(`SELECT * FROM items WHERE active = true ${userFilter}`, params);
+  if (!rows.length) return json(res, 200, { outfits: uid ? [] : [], message: uid ? "Add garments first" : "Login to see suggestions" });
   const suggestions = generateOutfitSuggestions(rows, { season });
   json(res, 200, { outfits: suggestions });
+}
+
+async function apiLogin(req, res) {
+  const input = await parseBody(req);
+  const { username, password } = input;
+  if (!username || !password) return json(res, 400, { error: "username and password required" });
+  const user = await sqlOne("SELECT * FROM users WHERE username = $1", [username]);
+  if (!user) return json(res, 401, { error: "Invalid credentials" });
+  if (user.password_hash !== password) return json(res, 401, { error: "Invalid credentials" });
+  json(res, 200, { userId: user.id, username: user.username, displayName: user.display_name });
+}
+
+async function apiRegister(req, res) {
+  const input = await parseBody(req);
+  const { username, password, displayName } = input;
+  if (!username || !password) return json(res, 400, { error: "username and password required" });
+  if (username.length < 3) return json(res, 400, { error: "Username must be at least 3 characters" });
+  if (password.length < 4) return json(res, 400, { error: "Password must be at least 4 characters" });
+  try {
+    const rows = await sql(
+      "INSERT INTO users (username, password_hash, display_name) VALUES ($1, $2, $3) RETURNING *",
+      [username, password, displayName || username]
+    );
+    const user = rows[0];
+    json(res, 201, { userId: user.id, username: user.username, displayName: user.display_name });
+  } catch (err) {
+    if (err.code === "23505") return json(res, 409, { error: "Username already taken" });
+    json(res, 500, { error: err.message });
+  }
 }
 
 async function apiLibrary(req, res, filename) {
@@ -490,6 +546,8 @@ async function handleApi(req, res) {
 
   try {
     if (req.method === "GET" && pathname === "/api/status") { await apiStatus(req, res); return true; }
+    if (req.method === "POST" && pathname === "/api/auth/login") { await apiLogin(req, res); return true; }
+    if (req.method === "POST" && pathname === "/api/auth/register") { await apiRegister(req, res); return true; }
     if (req.method === "GET" && pathname === "/api/garments") { await apiGetGarments(req, res); return true; }
     if (req.method === "POST" && pathname === "/api/garments/import") { await apiImportGarment(req, res); return true; }
     if (req.method === "GET" && pathname === "/api/outfits") { await apiGetOutfits(req, res); return true; }
