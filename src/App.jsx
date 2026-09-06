@@ -4,6 +4,7 @@ import { OptimizedImage } from "./OptimizedImage.jsx";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
+const USER_KEY = "open-wardrobe-user";
 
 const TYPES = [
   { id: "all", label: "All" },
@@ -151,6 +152,47 @@ function sampleImageColor(image, canvas, event) {
 
   return null;
 }
+
+function AuthForm({ mode, onLogin, onRegister, onSwitch }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      if (mode === "login") await onLogin(username, password);
+      else await onRegister(username, password, displayName);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {mode === "register" && (
+        <input type="text" placeholder="Display name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} />
+      )}
+      <input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} required style={inputStyle} />
+      <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required style={inputStyle} />
+      {error && <p style={{ color: "var(--status-error)", fontSize: 13, margin: 0 }}>{error}</p>}
+      <button type="submit" className="primary-button" disabled={loading} style={{ marginTop: 4 }}>
+        {loading ? "..." : mode === "login" ? "Sign In" : "Create Account"}
+      </button>
+      <button type="button" onClick={onSwitch} style={{ background: "none", border: "none", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}>
+        {mode === "login" ? "No account? Register" : "Have an account? Sign In"}
+      </button>
+    </form>
+  );
+}
+
+const inputStyle = { width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text)", fontSize: 14, boxSizing: "border-box" };
 
 function GalleryItem({ item, selected, onOpen }) {
   const type = TYPE_MAP[item.part]?.singular || "wardrobe item";
@@ -722,13 +764,62 @@ export function App() {
   const [activeTab, setActiveTab] = useState("closet");
   const [importing, setImporting] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [currentUser, setCurrentUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; }
+  });
+  const [authMode, setAuthMode] = useState("login");
+  const [showAuth, setShowAuth] = useState(false);
   const fileInputRef = useRef(null);
 
-  const reload = async () => {
+  const authHeaders = useCallback(() => {
+    const headers = { "Content-Type": "application/json" };
+    if (currentUser) headers["x-user-id"] = currentUser.userId;
+    return headers;
+  }, [currentUser]);
+
+  const login = useCallback(async (username, password) => {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Login failed");
+    const user = { userId: data.userId, username: data.username, displayName: data.displayName };
+    setCurrentUser(user);
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    setShowAuth(false);
+    reload();
+  }, []);
+
+  const register = useCallback(async (username, password, displayName) => {
+    const res = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, displayName }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Register failed");
+    const user = { userId: data.userId, username: data.username, displayName: data.displayName };
+    setCurrentUser(user);
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    setShowAuth(false);
+    reload();
+  }, []);
+
+  const logout = useCallback(() => {
+    setCurrentUser(null);
+    localStorage.removeItem(USER_KEY);
+    setItems([]);
+    setOutfits([]);
+  }, []);
+
+  const reload = useCallback(async () => {
     try {
+      const headers = authHeaders();
       const [gRes, oRes] = await Promise.all([
-        fetch("/api/garments", { cache: "no-store" }),
-        fetch("/api/outfits", { cache: "no-store" }),
+        fetch("/api/garments", { ...headers, cache: "no-store" }),
+        fetch("/api/outfits", { ...headers, cache: "no-store" }),
       ]);
       const loadedItems = gRes.ok ? await gRes.json() : [];
       const loadedOutfits = oRes.ok ? await oRes.json() : [];
@@ -742,9 +833,9 @@ export function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [authHeaders]);
 
-  useEffect(() => { reload(); }, []);
+  useEffect(() => { reload(); }, [currentUser]);
 
   const handleImport = useCallback(async (files) => {
     const images = [...files].filter(f => f.type.startsWith("image/"));
@@ -761,7 +852,7 @@ export function App() {
         const base64 = dataUrl.split(",")[1];
         const res = await fetch("/api/garments/import", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: authHeaders(),
           body: JSON.stringify({ imageBase64: base64, mimeType: file.type }),
         });
         if (!res.ok) {
@@ -815,7 +906,7 @@ export function App() {
     persistEdit(updatedItem);
     fetch(`/api/garments/${updatedItem.id}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify(updatedItem),
     }).catch(() => {});
   };
@@ -823,7 +914,7 @@ export function App() {
   const deleteItem = async (id) => {
     if (id.startsWith("import-")) {
       try {
-        const response = await fetch(`/api/garments/${id}`, { method: "DELETE" });
+        const response = await fetch(`/api/garments/${id}`, { method: "DELETE", headers: authHeaders() });
         if (!response.ok && response.status !== 404) throw new Error("Could not delete the imported item.");
       } catch (requestError) {
         setError(requestError.message);
@@ -839,7 +930,7 @@ export function App() {
   const createOutfit = async (payload) => {
     const res = await fetch("/api/outfits", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify(payload),
     });
     if (!res.ok) { setError("Could not save outfit"); return; }
@@ -850,7 +941,7 @@ export function App() {
   const updateOutfit = async (id, payload) => {
     const res = await fetch(`/api/outfits/${id}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify(payload),
     });
     if (!res.ok) { setError("Could not update outfit"); return; }
@@ -859,12 +950,36 @@ export function App() {
   };
 
   const deleteOutfit = async (id) => {
-    await fetch(`/api/outfits/${id}`, { method: "DELETE" });
+    await fetch(`/api/outfits/${id}`, { method: "DELETE", headers: authHeaders() });
     setOutfits((cur) => cur.filter((o) => o.id !== id));
   };
 
   return (
     <div className={`app-shell${selectedItem ? " has-selection" : ""}${dragging ? " is-dragging" : ""}`}>
+      {showAuth && (
+        <div className="import-drop-overlay" onClick={() => setShowAuth(false)}>
+          <div className="import-drop-target" style={{ maxWidth: 360, textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginBottom: 16 }}>{authMode === "login" ? "Sign In" : "Create Account"}</h2>
+            <AuthForm
+              mode={authMode}
+              onLogin={login}
+              onRegister={register}
+              onSwitch={() => setAuthMode(authMode === "login" ? "register" : "login")}
+            />
+          </div>
+        </div>
+      )}
+      <header className="app-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+        <span style={{ fontWeight: 600 }}>Wardrobe</span>
+        {currentUser ? (
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{currentUser.displayName}</span>
+            <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={logout}>Logout</button>
+          </div>
+        ) : (
+          <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => { setAuthMode("login"); setShowAuth(true); }}>Sign In</button>
+        )}
+      </header>
       <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleImport(e.target.files); e.target.value = ""; }} />
       {dragging && (
         <div className="import-drop-overlay">
