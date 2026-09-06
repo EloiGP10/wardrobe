@@ -1,71 +1,68 @@
-<div align="center">
+# Mi Closet
 
-# Wardrobe
+Webapp móvil para gestionar tu armario digital y crear outfits. Mobile-first responsive.
 
-Your clothes, extracted and organized with gpt-image.
+Basado en [tandpfun/wardrobe](https://github.com/tandpfun/wardrobe), adaptado con:
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-191919?style=flat-square)](LICENSE)
-[![Node 22+](https://img.shields.io/badge/node-22%2B-191919?style=flat-square)](package.json)
+- **Supabase Postgres** como base de datos (en lugar de `data/library.json`)
+- **Pestaña Outfits** con collage manual y sugerencias automáticas por reglas (sin IA)
+- **Mobile-first** responsive
 
-[See the original post →](https://x.com/cdngdev/status/2076812846793650485)
+## Stack
 
-</div>
+- Vite + React 19
+- Node `server.mjs` como servidor productivo (Vite middlewareMode)
+- Supabase (Postgres + opcionalmente Storage para imágenes)
 
-![Wardrobe gallery](docs/screenshots/gallery.png)
-
-![Modeled wardrobe editor](docs/screenshots/editor.png)
-
-## Quick start
+## Configuración rápida
 
 ```bash
-git clone https://github.com/tandpfun/wardrobe.git
+git clone https://github.com/EloiGP10/wardrobe.git
 cd wardrobe
 npm install
 cp .env.example .env
+# Edita .env con SUPABASE_URL y SUPABASE_SERVICE_KEY
 npm run dev
 ```
 
-⚠️ The importer stays disabled until you add `OPENAI_API_KEY` to `.env` and place a PNG reference photo of yourself at `data/model-reference.png`.
+## Variables de entorno
 
-Open [localhost:5173](http://localhost:5173).
-
-## Import with Codex
-
-This repo includes two Codex skills: one imports clothes and generates modeled item photos; the other styles complete outfits and generates a modeled lookbook.
-
-```text
-$import-clothes Import the clothes from ~/Pictures/outfits, create modeled photos, and add them to this wardrobe.
-$generate-outfits Create modeled outfit ideas from my wardrobe.
-```
-
-Open the cloned repo in Codex and run either prompt. The import skill asks for a local model-reference PNG when needed, reviews every cutout and modeled photo, then writes to `data/library.json` and `data/imported/`. The outfit skill asks how many looks to create, then curates, generates, verifies, and saves the complete collection under `data/`.
-
-### For agents
-
-If you are setting up Wardrobe for a user, ask how they want to import their clothes:
-
-- **Codex:** Ask for a folder or camera-roll location and a model-reference PNG, then extract, model, and import the individual pieces by following [the bundled import skill](.agents/skills/import-clothes/SKILL.md). Afterward, offer to create a requested number of modeled looks with [the outfit-generation skill](.agents/skills/generate-outfits/SKILL.md).
-- **Web UI:** Help the user configure their own `OPENAI_API_KEY` and `data/model-reference.png`, then let them import through the app.
-
-## What it does
-
-- Detects every garment in a photo with the OpenAI Responses API
-- Extracts clean product cutouts with the OpenAI Images API
-- Generates an optional modeled editorial preview
-- Keeps originals, jobs, generated images, and the JSON database local in `data/`
-- Supports drag, drop, paste, editing, review, regeneration, and approval
-
-## Configuration
-
-| Variable | Default |
+| Variable | Descripción |
 | --- | --- |
-| `OPENAI_API_KEY` | Required |
-| `OPENAI_VISION_MODEL` | `gpt-5.4-mini` |
-| `OPENAI_IMAGE_MODEL` | `gpt-image-2` |
-| `OPENAI_IMAGE_QUALITY` | `high` |
-| `WARDROBE_MODEL_REFERENCE` | `data/model-reference.png` |
-| `WARDROBE_DATA_DIR` | `data` |
+| `SUPABASE_URL` | URL del proyecto Supabase |
+| `SUPABASE_SERVICE_KEY` | Clave service-role (no la anon) |
+| `WARDROBE_STORAGE_BUCKET` | Bucket de Storage (opcional, por defecto `wardrobe`) |
+| `OPENAI_API_KEY` | Opcional. Activa el import con detección de prendas |
+| `PORT` | Puerto del servidor (default 3000) |
 
-## License
+## Esquema de base de datos
 
-[MIT](LICENSE)
+Aplicar `db/schema.sql` en el SQL editor de Supabase. Crea 4 tablas:
+
+- `garments` — prendas individuales
+- `import_jobs` — trabajos de import con OpenAI (futuro)
+- `outfits` — outfits compuestos
+- `outfit_items` — relación N:M entre outfits y garments
+
+## Funcionalidades
+
+- **Closet**: galería filtrada por categoría, edición de cada prenda (nombre, color, detalles)
+- **Import (opcional)**: detección de prendas con OpenAI desde una foto (requiere `OPENAI_API_KEY`)
+- **Outfits**:
+  - Crear outfits manualmente eligiendo prendas
+  - Sugerencias automáticas basadas en reglas de compatibilidad (color, formalidad, tipo)
+  - Modo collage con previsualización de la combinación
+
+## Despliegue
+
+Configurado para Coolify con build pack `nixpacks`:
+
+- Build: `npm run build`
+- Start: `node server.mjs`
+- Puerto interno: 3000
+
+Variables requeridas en Coolify: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`.
+
+## Licencia
+
+MIT

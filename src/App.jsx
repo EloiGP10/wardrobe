@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Plus, Trash, X } from "@phosphor-icons/react";
-import { WardrobeImportFlow } from "./import-flow.jsx";
+import { Check, Plus, Trash, X, Sparkle, Shuffle } from "@phosphor-icons/react";
 import { OptimizedImage } from "./OptimizedImage.jsx";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
@@ -532,28 +531,217 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
   );
 }
 
+function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete }) {
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [selectedGarments, setSelectedGarments] = useState(new Set());
+  const [outfitName, setOutfitName] = useState("");
+  const [outfitOccasion, setOutfitOccasion] = useState("casual");
+  const garmentsById = useMemo(() => Object.fromEntries(items.map((g) => [g.id, g])), [items]);
+
+  const renderCollage = (garmentIds) => {
+    const set = garmentIds.map((id) => garmentsById[id]).filter(Boolean);
+    const top = set.find((g) => g.part === "upperbody" || g.part === "wholebody_up");
+    const bottom = set.find((g) => g.part === "lowerbody");
+    const shoe = set.find((g) => g.part === "shoes");
+    const acc = set.find((g) => g.part === "accessories_up");
+    return (
+      <div className="outfit-collage-card">
+        {top && <div className="outfit-piece outfit-piece-top"><OptimizedImage src={top.image} alt={top.name} sizes="120px" breakpoints={[80, 120, 180]} /></div>}
+        <div className="outfit-piece-row">
+          {bottom && <div className="outfit-piece outfit-piece-bottom"><OptimizedImage src={bottom.image} alt={bottom.name} sizes="100px" breakpoints={[60, 100, 140]} /></div>}
+          <div className="outfit-piece-stack">
+            {shoe && <div className="outfit-piece outfit-piece-shoes"><OptimizedImage src={shoe.image} alt={shoe.name} sizes="60px" breakpoints={[40, 60, 90]} /></div>}
+            {acc && <div className="outfit-piece outfit-piece-acc"><OptimizedImage src={acc.image} alt={acc.name} sizes="60px" breakpoints={[40, 60, 90]} /></div>}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const handleSuggest = async () => {
+    setLoadingSuggestions(true);
+    try {
+      const res = await fetch("/api/outfits/suggest");
+      const data = await res.json();
+      setSuggestions(data.outfits || []);
+    } finally { setLoadingSuggestions(false); }
+  };
+
+  const openBuilder = (id) => {
+    if (id) {
+      const o = outfits.find((x) => x.id === id);
+      if (o) {
+        setOutfitName(o.name); setOutfitOccasion(o.occasion || "casual");
+        setSelectedGarments(new Set(o.garmentIds || []));
+      }
+    } else {
+      setOutfitName(""); setOutfitOccasion("casual"); setSelectedGarments(new Set());
+    }
+    setEditingId(id);
+    setBuilderOpen(true);
+  };
+
+  const handleSaveOutfit = async () => {
+    const payload = { name: outfitName || `Look ${outfits.length + 1}`, occasion: outfitOccasion, garmentIds: [...selectedGarments] };
+    if (editingId) await onUpdate(editingId, payload);
+    else await onCreate(payload);
+    setBuilderOpen(false);
+  };
+
+  return (
+    <section className="outfits-panel">
+      <header className="outfits-header">
+        <h2>Outfits</h2>
+        <div className="outfits-actions">
+          <button className="secondary-button" onClick={handleSuggest} disabled={loadingSuggestions}>
+            <Sparkle size={14} weight="bold" /> {loadingSuggestions ? "..." : "Suggest"}
+          </button>
+          <button className="primary-button" onClick={() => openBuilder(null)}>
+            <Plus size={14} weight="bold" /> New
+          </button>
+        </div>
+      </header>
+
+      {suggestions.length > 0 && (
+        <section className="outfit-suggestions">
+          <h3>AI Suggestions</h3>
+          <div className="outfits-grid">
+            {suggestions.map((s, i) => (
+              <article key={i} className="outfit-card">
+                {renderCollage(s.garmentIds)}
+                <div className="outfit-card-body">
+                  <h4>{s.name}</h4>
+                  <small>{s.occasion}</small>
+                  <button className="primary-button" onClick={() => onCreate({ name: s.name, occasion: s.occasion, garmentIds: s.garmentIds })}>
+                    <Plus size={12} weight="bold" /> Save
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {outfits.length === 0 && !loadingSuggestions ? (
+        <p className="status empty">No outfits yet. Compose your first look.</p>
+      ) : (
+        <div className="outfits-grid">
+          {outfits.map((o) => (
+            <article key={o.id} className="outfit-card">
+              {renderCollage(o.garmentIds || [])}
+              <div className="outfit-card-body">
+                <h4>{o.name}</h4>
+                {o.occasion && <small>{o.occasion}</small>}
+                <div className="outfit-card-actions">
+                  <button className="secondary-button" onClick={() => openBuilder(o.id)}>Edit</button>
+                  <button className="delete-button" onClick={() => onDelete(o.id)}><Trash size={12} weight="regular" /></button>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {builderOpen && (
+        <div className="outfit-builder-overlay" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && setBuilderOpen(false)}>
+          <div className="outfit-builder" role="dialog" aria-modal="true">
+            <header className="outfit-builder-header">
+              <h3>{editingId ? "Edit outfit" : "New outfit"}</h3>
+              <button className="icon-button" onClick={() => setBuilderOpen(false)}><X size={20} weight="light" /></button>
+            </header>
+
+            <div className="outfit-builder-preview">{renderCollage([...selectedGarments])}</div>
+
+            <div className="outfit-builder-fields">
+              <label className="field">
+                <span>Name</span>
+                <input value={outfitName} onChange={(e) => setOutfitName(e.target.value)} placeholder="My Monday look" />
+              </label>
+              <label className="field">
+                <span>Occasion</span>
+                <select value={outfitOccasion} onChange={(e) => setOutfitOccasion(e.target.value)}>
+                  <option value="casual">Casual</option>
+                  <option value="formal">Formal</option>
+                  <option value="sport">Sport</option>
+                  <option value="neutral">Everyday</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="outfit-picker">
+              <p className="outfit-picker-label">Pick pieces</p>
+              <div className="outfit-picker-grid">
+                {items.map((g) => (
+                  <button key={g.id} type="button"
+                    className={`picker-item ${selectedGarments.has(g.id) ? "selected" : ""}`}
+                    onClick={() => setSelectedGarments((cur) => { const n = new Set(cur); n.has(g.id) ? n.delete(g.id) : n.add(g.id); return n; })}
+                    aria-pressed={selectedGarments.has(g.id)}>
+                    <OptimizedImage src={g.thumbnail || g.image} alt="" sizes="70px" breakpoints={[50, 70, 100]} />
+                    <small>{g.name}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="outfit-builder-actions">
+              <button className="secondary-button" onClick={() => {
+                const tops = items.filter((g) => g.part === "upperbody" || g.part === "wholebody_up");
+                const bottoms = items.filter((g) => g.part === "lowerbody");
+                const shoes = items.filter((g) => g.part === "shoes");
+                const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+                const s = new Set();
+                if (pick(tops)) s.add(pick(tops).id);
+                if (pick(bottoms)) s.add(pick(bottoms).id);
+                if (pick(shoes)) s.add(pick(shoes).id);
+                setSelectedGarments(s);
+                setOutfitName(`Random ${outfits.length + 1}`);
+              }}>
+                <Shuffle size={14} weight="bold" /> Random
+              </button>
+              <button className="primary-button" onClick={handleSaveOutfit} disabled={!selectedGarments.size}>
+                <Check size={14} weight="bold" /> {editingId ? "Update" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function App() {
   const [items, setItems] = useState([]);
+  const [outfits, setOutfits] = useState([]);
   const [activeType, setActiveType] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState("closet");
 
-  useEffect(() => {
-    fetch("/api/import/wardrobe", { cache: "no-store" })
-      .then((response) => {
-        if (!response.ok) throw new Error("Could not load the wardrobe.");
-        return response.json();
-      })
-      .then((loadedItems) => {
-        const edits = readEdits();
-        const deleted = readDeletedItems();
-        const visibleItems = loadedItems.filter((item) => !deleted.has(item.id));
-        setItems(visibleItems.map((item) => ({ ...item, ...(edits[item.id] || {}) })));
-      })
-      .catch((requestError) => setError(requestError.message))
-      .finally(() => setLoading(false));
-  }, []);
+  const reload = async () => {
+    try {
+      const [gRes, oRes] = await Promise.all([
+        fetch("/api/garments", { cache: "no-store" }),
+        fetch("/api/outfits", { cache: "no-store" }),
+      ]);
+      const loadedItems = gRes.ok ? await gRes.json() : [];
+      const loadedOutfits = oRes.ok ? await oRes.json() : [];
+      const edits = readEdits();
+      const deleted = readDeletedItems();
+      const visibleItems = loadedItems.filter((item) => !deleted.has(item.id));
+      setItems(visibleItems.map((item) => ({ ...item, ...(edits[item.id] || {}) })));
+      setOutfits(loadedOutfits);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { reload(); }, []);
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
 
@@ -576,12 +764,17 @@ export function App() {
   const saveItem = (updatedItem) => {
     setItems((current) => current.map((item) => item.id === updatedItem.id ? updatedItem : item));
     persistEdit(updatedItem);
+    fetch(`/api/garments/${updatedItem.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updatedItem),
+    }).catch(() => {});
   };
 
   const deleteItem = async (id) => {
     if (id.startsWith("import-")) {
       try {
-        const response = await fetch(`/api/import/wardrobe/${id}`, { method: "DELETE" });
+        const response = await fetch(`/api/garments/${id}`, { method: "DELETE" });
         if (!response.ok && response.status !== 404) throw new Error("Could not delete the imported item.");
       } catch (requestError) {
         setError(requestError.message);
@@ -594,17 +787,45 @@ export function App() {
     setSelectedId(null);
   };
 
-  const addImportedItem = useCallback((newItem) => {
-    setItems((current) => current.some((item) => item.id === newItem.id) ? current : [...current, newItem]);
-  }, []);
+  const createOutfit = async (payload) => {
+    const res = await fetch("/api/outfits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) { setError("Could not save outfit"); return; }
+    const created = await res.json();
+    setOutfits((cur) => [created, ...cur]);
+  };
 
-  const attachImportedModeledImage = useCallback((jobId, modeledImage) => {
-    const id = `import-${jobId}`;
-    setItems((current) => current.map((item) => item.id === id ? { ...item, modeledImage } : item));
-  }, []);
+  const updateOutfit = async (id, payload) => {
+    const res = await fetch(`/api/outfits/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) { setError("Could not update outfit"); return; }
+    const updated = await res.json();
+    setOutfits((cur) => cur.map((o) => o.id === id ? updated : o));
+  };
+
+  const deleteOutfit = async (id) => {
+    await fetch(`/api/outfits/${id}`, { method: "DELETE" });
+    setOutfits((cur) => cur.filter((o) => o.id !== id));
+  };
 
   return (
     <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
+      <nav className="tab-bar">
+        <button type="button" className={activeTab === "closet" ? "active" : ""} onClick={() => setActiveTab("closet")}>
+          Closet
+        </button>
+        <button type="button" className={activeTab === "outfits" ? "active" : ""} onClick={() => setActiveTab("outfits")}>
+          Outfits
+        </button>
+      </nav>
+
+      {activeTab === "closet" && (
       <main className="gallery-pane">
         <header className="gallery-header">
           <div className="gallery-meta-row">
@@ -642,9 +863,20 @@ export function App() {
           </section>
         )}
       </main>
+      )}
+
+      {activeTab === "outfits" && (
+        <OutfitsPanel
+          items={items}
+          outfits={outfits}
+          onCreate={createOutfit}
+          onUpdate={updateOutfit}
+          onDelete={deleteOutfit}
+          onLoadSuggestions={reload}
+        />
+      )}
 
       {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
-      <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
   );
 }
