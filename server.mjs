@@ -1,22 +1,22 @@
 import { createServer as createHttpServer } from "node:http";
 import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve, extname } from "node:path";
-import { createClient } from "@supabase/supabase-js";
+import { resolve, extname } from "node:path";
+import pg from "pg";
 import dotenv from "dotenv";
 
 dotenv.config();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const SUPABASE_URL = process.env.SUPABASE_URL || "";
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || SUPABASE_ANON_KEY;
+const DATABASE_URL = process.env.DATABASE_URL || "";
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const DIST_DIR = resolve(process.env.DIST_DIR || "dist");
 const DATA_DIR = resolve(process.cwd(), "data");
 const UPLOAD_DIR = resolve(DATA_DIR, "imported");
 if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
+const db = new pg.Pool({ connectionString: DATABASE_URL, max: 5 });
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function json(res, status, value) {
   res.statusCode = status;
@@ -29,6 +29,32 @@ async function parseBody(req) {
   const chunks = [];
   for await (const c of req) chunks.push(c);
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+}
+
+async function sql(query, params = []) {
+  const result = await db.query(query, params);
+  return result.rows;
+}
+
+async function sqlOne(query, params = []) {
+  const rows = await sql(query, params);
+  return rows[0] || null;
+}
+
+function mapItem(g) {
+  return {
+    id: g.id, name: g.name, part: g.part, color: g.color,
+    secondaryColor: g.secondary_color, palette: g.palette || [],
+    tags: g.tags || [],
+    image: g.image_url, thumbnail: g.thumbnail_url || g.image_url,
+    modeledImage: g.modeled_url || null,
+    gender: g.gender, style: g.style || [], season: g.season || [],
+    occasion: g.occasion || [], material: g.material, pattern: g.pattern,
+    fit: g.fit, neckline: g.neckline, length: g.length,
+    details: g.details || [], weather: g.weather || [],
+    warmthLevel: g.warmth_level, formalityLevel: g.formality_level,
+    trendScore: g.trend_score, brand: g.brand, description: g.description,
+  };
 }
 
 // ─── Gemini Vision ────────────────────────────────────────────────────────────
@@ -55,9 +81,9 @@ async function analyzeGarmentWithGemini(imageBase64, mimeType = "image/png") {
   "length": "crop|regular|long|maxi|mini|ankle|knee|thigh|calf",
   "details": ["array of notable features: buttons, zipper, pockets, embroidery, ruffles, belt, hood, drawstring, pleats, lace, sequins, fringes, patches, logo, rivets, stitching"],
   "weather": ["array from: hot, warm, mild, cool, cold, rainy, windy"],
-  "warmth_level": 1-5 scale (1=very light like tank top, 5=very warm like heavy coat),
-  "formality_level": 1-5 scale (1=very casual like gym shorts, 5=very formal like tuxedo),
-  "trend_score": 1-5 scale based on current fashion trends,
+  "warmth_level": "1-5 scale (1=very light like tank top, 5=very warm like heavy coat)",
+  "formality_level": "1-5 scale (1=very casual like gym shorts, 5=very formal like tuxedo)",
+  "trend_score": "1-5 scale based on current fashion trends",
   "brand": "detected brand name or null if not visible",
   "description": "brief 1-2 sentence description of the garment",
   "tags": ["array of relevant tags for searching and matching"]
@@ -84,18 +110,10 @@ async function analyzeGarmentWithGemini(imageBase64, mimeType = "image/png") {
   const text = result.candidates?.[0]?.content?.parts?.[0]?.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("Gemini did not return valid JSON");
-
   return JSON.parse(jsonMatch[0]);
 }
 
 // ─── Outfit Rules Engine ─────────────────────────────────────────────────────
-
-const COLOR_HARMONY = {
-  complementary: 0.8,
-  analogous: 0.9,
-  triadic: 0.7,
-  neutral_safe: 1.0,
-};
 
 function hexToHSL(hex) {
   const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -127,8 +145,8 @@ function isNeutral(hex) {
 
 function scoreColorCombo(a, b) {
   if (!a?.color || !b?.color) return 5;
-  const dist = colorDistance(a.color, b.color);
   if (isNeutral(a.color) || isNeutral(b.color)) return 10;
+  const dist = colorDistance(a.color, b.color);
   if (dist < 30) return 6;
   if (dist < 60) return 9;
   if (dist < 120) return 7;
@@ -138,24 +156,21 @@ function scoreColorCombo(a, b) {
 function scoreStyleMatch(a, b) {
   const sa = new Set(a.style || []);
   const sb = new Set(b.style || []);
-  const overlap = [...sa].filter(x => sb.has(x)).length;
-  return overlap * 3;
+  return [...sa].filter(x => sb.has(x)).length * 3;
 }
 
 function scoreSeasonMatch(a, b) {
   const sa = new Set(a.season || []);
   const sb = new Set(b.season || []);
-  if (sa.size === 0 || sb.size === 0) return 3;
-  const overlap = [...sa].filter(x => sb.has(x)).length;
-  return overlap * 2;
+  if (!sa.size || !sb.size) return 3;
+  return [...sa].filter(x => sb.has(x)).length * 2;
 }
 
 function scoreOccasionMatch(a, b) {
   const oa = new Set(a.occasion || []);
   const ob = new Set(b.occasion || []);
-  if (oa.size === 0 || ob.size === 0) return 3;
-  const overlap = [...oa].filter(x => ob.has(x)).length;
-  return overlap * 2;
+  if (!oa.size || !ob.size) return 3;
+  return [...oa].filter(x => ob.has(x)).length * 2;
 }
 
 function scoreFormality(a, b) {
@@ -166,17 +181,15 @@ function scoreFormality(a, b) {
 }
 
 function scoreWarmth(a, b, targetSeason) {
-  const wa = a.warmth_level || 3;
-  const wb = b.warmth_level || 3;
   const targets = { hot: 1, warm: 2, mild: 3, cool: 4, cold: 5 };
   const target = targets[targetSeason] || 3;
-  const total = (wa + wb) / 2;
+  const total = ((a.warmth_level || 3) + (b.warmth_level || 3)) / 2;
   const diff = Math.abs(total - target);
   return diff < 1 ? 5 : diff < 2 ? 3 : 1;
 }
 
 function generateOutfitSuggestions(items, context = {}) {
-  const { season = "mild", occasion = "casual", targetWarmth = 3 } = context;
+  const { season = "mild" } = context;
 
   const tops = items.filter(i => i.part === "upperbody" || i.part === "wholebody_up");
   const bottoms = items.filter(i => i.part === "lowerbody");
@@ -187,26 +200,23 @@ function generateOutfitSuggestions(items, context = {}) {
 
   for (const top of tops) {
     for (const bottom of bottoms) {
-      let totalScore = 0;
+      let total = 0;
       const reasons = [];
 
       const colorScore = scoreColorCombo(top, bottom);
-      totalScore += colorScore;
+      total += colorScore;
       if (colorScore >= 9) reasons.push("great color match");
 
       const styleScore = scoreStyleMatch(top, bottom);
-      totalScore += styleScore;
+      total += styleScore;
       if (styleScore >= 6) reasons.push("matching styles");
 
-      const seasonScore = scoreSeasonMatch(top, bottom);
-      totalScore += seasonScore;
+      total += scoreSeasonMatch(top, bottom);
+      total += scoreOccasionMatch(top, bottom);
 
-      const occasionScore = scoreOccasionMatch(top, bottom);
-      totalScore += occasionScore;
-
-      const formalityScore = scoreFormality(top, bottom);
-      totalScore += formalityScore;
-      if (formalityScore >= 6) reasons.push("similar formality");
+      const formScore = scoreFormality(top, bottom);
+      total += formScore;
+      if (formScore >= 6) reasons.push("similar formality");
 
       const bestShoes = shoes.reduce((best, shoe) => {
         let s = scoreColorCombo(top, shoe) + scoreColorCombo(bottom, shoe);
@@ -221,38 +231,27 @@ function generateOutfitSuggestions(items, context = {}) {
         return s > best.score ? { item: acc, score: s } : best;
       }, { item: null, score: -999 });
 
-      if (bestShoes.item) {
-        totalScore += bestShoes.score * 0.3;
-        if (scoreColorCombo(top, bestShoes.item) >= 9) reasons.push("shoes match top");
-      }
-      if (bestAcc.item) {
-        totalScore += bestAcc.score * 0.2;
-        if (scoreColorCombo(bottom, bestAcc.item) >= 9) reasons.push("accessory ties together");
-      }
+      if (bestShoes.item) { total += bestShoes.score * 0.3; }
+      if (bestAcc.item) { total += bestAcc.score * 0.2; }
 
-      const warmthScore = scoreWarmth(top, bottom, season);
-      totalScore += warmthScore;
-
-      if (totalScore < 15) continue;
+      total += scoreWarmth(top, bottom, season);
+      if (total < 15) continue;
 
       const garmentIds = [top.id, bottom.id];
       if (bestShoes.item) garmentIds.push(bestShoes.item.id);
       if (bestAcc.item) garmentIds.push(bestAcc.item.id);
 
-      const nameParts = [top.name, bottom.name];
-      if (bestShoes.item) nameParts.push(bestShoes.item.name);
-
-      let occasionLabel = "casual";
       const avgFormality = ((top.formality_level || 3) + (bottom.formality_level || 3)) / 2;
+      let occasionLabel = "casual";
       if (avgFormality >= 4) occasionLabel = "formal";
       else if (avgFormality >= 3) occasionLabel = "smart casual";
       else if (avgFormality <= 1.5) occasionLabel = "sport";
 
       suggestions.push({
-        name: nameParts.slice(0, 2).join(" + "),
+        name: `${top.name} + ${bottom.name}`,
         occasion: occasionLabel,
         garmentIds,
-        score: Math.round(totalScore * 100) / 100,
+        score: Math.round(total * 100) / 100,
         reasons,
         season: [...new Set([...(top.season || []), ...(bottom.season || [])])],
         weather: [...new Set([...(top.weather || []), ...(bottom.weather || [])])],
@@ -261,17 +260,15 @@ function generateOutfitSuggestions(items, context = {}) {
   }
 
   suggestions.sort((a, b) => b.score - a.score);
-
   const unique = [];
   const seen = new Set();
   for (const s of suggestions) {
-    const key = s.garmentIds.sort().join(",");
+    const key = [...s.garmentIds].sort().join(",");
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(s);
     if (unique.length >= 10) break;
   }
-
   return unique;
 }
 
@@ -279,136 +276,61 @@ function generateOutfitSuggestions(items, context = {}) {
 
 async function apiStatus(req, res) {
   json(res, 200, {
-    hasSupabase: Boolean(SUPABASE_URL),
+    hasDatabase: Boolean(DATABASE_URL),
     hasGemini: Boolean(GEMINI_API_KEY),
-    ready: Boolean(SUPABASE_URL),
+    ready: Boolean(DATABASE_URL),
   });
 }
 
 async function apiGetGarments(req, res) {
-  const { data, error } = await supabase
-    .from("items")
-    .select("*")
-    .eq("active", true)
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-
-  json(res, 200, (data || []).map(g => ({
-    id: g.id,
-    name: g.name,
-    part: g.part,
-    color: g.color,
-    secondaryColor: g.secondary_color,
-    palette: g.palette || [],
-    tags: g.tags || [],
-    image: g.image_url,
-    thumbnail: g.thumbnail_url || g.image_url,
-    modeledImage: g.modeled_url || null,
-    gender: g.gender,
-    style: g.style || [],
-    season: g.season || [],
-    occasion: g.occasion || [],
-    material: g.material,
-    pattern: g.pattern,
-    fit: g.fit,
-    neckline: g.neckline,
-    length: g.length,
-    details: g.details || [],
-    weather: g.weather || [],
-    warmthLevel: g.warmth_level,
-    formalityLevel: g.formality_level,
-    trendScore: g.trend_score,
-    brand: g.brand,
-    description: g.description,
-  })));
+  const rows = await sql("SELECT * FROM items WHERE active = true ORDER BY created_at DESC");
+  json(res, 200, rows.map(mapItem));
 }
 
 async function apiGetGarment(req, res, id) {
-  const { data, error } = await supabase
-    .from("items")
-    .select("*")
-    .eq("id", id)
-    .single();
-  if (error || !data) return json(res, 404, { error: "Not found" });
-
-  json(res, 200, {
-    id: data.id,
-    name: data.name,
-    part: data.part,
-    color: data.color,
-    secondaryColor: data.secondary_color,
-    palette: data.palette || [],
-    tags: data.tags || [],
-    image: data.image_url,
-    thumbnail: data.thumbnail_url || data.image_url,
-    modeledImage: data.modeled_url || null,
-    gender: data.gender,
-    style: data.style || [],
-    season: data.season || [],
-    occasion: data.occasion || [],
-    material: data.material,
-    pattern: data.pattern,
-    fit: data.fit,
-    neckline: data.neckline,
-    length: data.length,
-    details: data.details || [],
-    weather: data.weather || [],
-    warmthLevel: data.warmth_level,
-    formalityLevel: data.formality_level,
-    trendScore: data.trend_score,
-    brand: data.brand,
-    description: data.description,
-  });
+  const g = await sqlOne("SELECT * FROM items WHERE id = $1", [id]);
+  if (!g) return json(res, 404, { error: "Not found" });
+  json(res, 200, mapItem(g));
 }
 
 async function apiUpdateGarment(req, res, id) {
   const input = await parseBody(req);
-  const update = {
-    name: (input.name || "").trim().slice(0, 120) || "New piece",
-    part: input.part || "upperbody",
-    color: input.color || null,
-    secondary_color: input.secondaryColor || null,
-    palette: Array.isArray(input.palette) ? input.palette : [],
-    tags: Array.isArray(input.tags) ? input.tags : [],
-    gender: input.gender || null,
-    style: input.style || [],
-    season: input.season || [],
-    occasion: input.occasion || [],
-    material: input.material || null,
-    pattern: input.pattern || null,
-    fit: input.fit || null,
-    neckline: input.neckline || null,
-    length: input.length || null,
-    details: input.details || [],
-    weather: input.weather || [],
-    warmth_level: input.warmthLevel || null,
-    formality_level: input.formalityLevel || null,
-    trend_score: input.trendScore || null,
-    brand: input.brand || null,
-    description: input.description || null,
-  };
-
-  const { error } = await supabase.from("items").update(update).eq("id", id);
-  if (error) throw error;
-
-  const { data } = await supabase.from("items").select("*").eq("id", id).single();
-  json(res, 200, {
-    id: data.id, name: data.name, part: data.part, color: data.color,
-    secondaryColor: data.secondary_color, palette: data.palette || [], tags: data.tags || [],
-    image: data.image_url, thumbnail: data.thumbnail_url || data.image_url,
-    modeledImage: data.modeled_url || null,
-    gender: data.gender, style: data.style || [], season: data.season || [],
-    occasion: data.occasion || [], material: data.material, pattern: data.pattern,
-    fit: data.fit, neckline: data.neckline, length: data.length,
-    details: data.details || [], weather: data.weather || [],
-    warmthLevel: data.warmth_level, formalityLevel: data.formality_level,
-    trendScore: data.trend_score, brand: data.brand, description: data.description,
-  });
+  await sql(`UPDATE items SET
+    name = $1, part = $2, color = $3, secondary_color = $4, palette = $5, tags = $6,
+    gender = $7, style = $8, season = $9, occasion = $10, material = $11,
+    pattern = $12, fit = $13, neckline = $14, length = $15, details = $16,
+    weather = $17, warmth_level = $18, formality_level = $19, trend_score = $20,
+    brand = $21, description = $22 WHERE id = $23`, [
+    (input.name || "").trim().slice(0, 120) || "New piece",
+    input.part || "upperbody",
+    input.color || null,
+    input.secondaryColor || null,
+    JSON.stringify(Array.isArray(input.palette) ? input.palette : []),
+    input.tags || [],
+    input.gender || null,
+    input.style || [],
+    input.season || [],
+    input.occasion || [],
+    input.material || null,
+    input.pattern || null,
+    input.fit || null,
+    input.neckline || null,
+    input.length || null,
+    input.details || [],
+    input.weather || [],
+    input.warmthLevel || null,
+    input.formalityLevel || null,
+    input.trendScore || null,
+    input.brand || null,
+    input.description || null,
+    id,
+  ]);
+  const g = await sqlOne("SELECT * FROM items WHERE id = $1", [id]);
+  json(res, 200, mapItem(g));
 }
 
 async function apiDeleteGarment(req, res, id) {
-  const { error } = await supabase.from("items").update({ active: false }).eq("id", id);
-  if (error) throw error;
+  await sql("UPDATE items SET active = false WHERE id = $1", [id]);
   json(res, 200, { deleted: true, id });
 }
 
@@ -422,110 +344,84 @@ async function apiImportGarment(req, res) {
 
   const metadata = await analyzeGarmentWithGemini(imageBase64, mimeType);
 
-  const slug = `garment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const imagePath = `${UPLOAD_DIR}/${slug}.png`;
+  const slug = `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const filename = `${slug}.png`;
+  const imagePath = `${UPLOAD_DIR}/${filename}`;
 
   const buffer = Buffer.from(imageBase64, "base64");
   writeFileSync(imagePath, buffer);
 
-  const { data, error } = await supabase
-    .from("items")
-    .insert({
-      slug,
-      name: metadata.name || "Imported piece",
-      part: metadata.part || "upperbody",
-      color: metadata.color || null,
-      secondary_color: metadata.secondary_color || null,
-      palette: metadata.palette || [],
-      tags: metadata.tags || [],
-      image_url: `/api/library/${slug}.png`,
-      thumbnail_url: `/api/library/${slug}.png`,
-      gender: metadata.gender || null,
-      style: metadata.style || [],
-      season: metadata.season || [],
-      occasion: metadata.occasion || [],
-      material: metadata.material || null,
-      pattern: metadata.pattern || null,
-      fit: metadata.fit || null,
-      neckline: metadata.neckline || null,
-      length: metadata.length || null,
-      details: metadata.details || [],
-      weather: metadata.weather || [],
-      warmth_level: metadata.warmth_level || null,
-      formality_level: metadata.formality_level || null,
-      trend_score: metadata.trend_score || null,
-      brand: metadata.brand || null,
-      description: metadata.description || null,
-    })
-    .select()
-    .single();
+  const rows = await sql(`INSERT INTO items
+    (slug, name, part, color, secondary_color, palette, tags, image_url, thumbnail_url,
+     gender, style, season, occasion, material, pattern, fit, neckline, length,
+     details, weather, warmth_level, formality_level, trend_score, brand, description)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+    RETURNING *`, [
+    slug,
+    metadata.name || "Imported piece",
+    metadata.part || "upperbody",
+    metadata.color || null,
+    metadata.secondary_color || null,
+    JSON.stringify(metadata.palette || []),
+    metadata.tags || [],
+    `/api/library/${filename}`,
+    `/api/library/${filename}`,
+    metadata.gender || null,
+    metadata.style || [],
+    metadata.season || [],
+    metadata.occasion || [],
+    metadata.material || null,
+    metadata.pattern || null,
+    metadata.fit || null,
+    metadata.neckline || null,
+    metadata.length || null,
+    metadata.details || [],
+    metadata.weather || [],
+    metadata.warmth_level || null,
+    metadata.formality_level || null,
+    metadata.trend_score || null,
+    metadata.brand || null,
+    metadata.description || null,
+  ]);
 
-  if (error) throw error;
-
-  json(res, 201, {
-    id: data.id, name: data.name, part: data.part, color: data.color,
-    secondaryColor: data.secondary_color, palette: data.palette || [], tags: data.tags || [],
-    image: data.image_url, thumbnail: data.thumbnail_url || data.image_url,
-    modeledImage: null,
-    gender: data.gender, style: data.style || [], season: data.season || [],
-    occasion: data.occasion || [], material: data.material, pattern: data.pattern,
-    fit: data.fit, neckline: data.neckline, length: data.length,
-    details: data.details || [], weather: data.weather || [],
-    warmthLevel: data.warmth_level, formalityLevel: data.formality_level,
-    trendScore: data.trend_score, brand: data.brand, description: data.description,
-    metadata,
-  });
+  const g = rows[0];
+  json(res, 201, { ...mapItem(g), metadata });
 }
 
 async function apiGetOutfits(req, res) {
-  const { data: outfits, error } = await supabase
-    .from("outfits")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-
-  const result = await Promise.all((outfits || []).map(async o => {
-    const { data: items } = await supabase
-      .from("outfit_items")
-      .select("item_id, position")
-      .eq("outfit_id", o.id)
-      .order("position");
+  const rows = await sql("SELECT * FROM outfits ORDER BY created_at DESC");
+  const result = await Promise.all(rows.map(async o => {
+    const items = await sql(
+      "SELECT item_id FROM outfit_items WHERE outfit_id = $1 ORDER BY position",
+      [o.id]
+    );
     return {
       id: o.id, name: o.name, occasion: o.occasion, season: o.season,
       isFavorite: o.is_favorite, uses: o.uses,
-      garmentIds: (items || []).map(i => i.item_id),
+      garmentIds: items.map(i => i.item_id),
       weather: o.weather || [], formalityLevel: o.formality_level,
       style: o.style || [], score: o.score,
       createdAt: o.created_at, updatedAt: o.updated_at,
     };
   }));
-
   json(res, 200, result);
 }
 
 async function apiCreateOutfit(req, res) {
   const input = await parseBody(req);
-  const { data: outfit, error } = await supabase
-    .from("outfits")
-    .insert({
-      name: input.name || "New outfit",
-      occasion: input.occasion || null,
-      season: input.season || null,
-      weather: input.weather || [],
-      formality_level: input.formalityLevel || null,
-      style: input.style || [],
-      score: input.score || null,
-    })
-    .select()
-    .single();
-  if (error) throw error;
-
+  const rows = await sql(
+    `INSERT INTO outfits (name, occasion, season, weather, formality_level, style, score)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [input.name || "New outfit", input.occasion || null, input.season || null,
+     input.weather || [], input.formalityLevel || null, input.style || [], input.score || null]
+  );
+  const outfit = rows[0];
   if (Array.isArray(input.garmentIds) && input.garmentIds.length) {
-    await supabase.from("outfit_items").insert(
-      input.garmentIds.map((gid, i) => ({ outfit_id: outfit.id, garment_id: gid, position: i }))
+    await sql(
+      `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3})`).join(",")}`,
+      input.garmentIds.flatMap(gid => [outfit.id, gid])
     );
   }
-
   json(res, 201, {
     id: outfit.id, name: outfit.name, occasion: outfit.occasion, season: outfit.season,
     garmentIds: input.garmentIds || [], weather: outfit.weather || [],
@@ -536,55 +432,42 @@ async function apiCreateOutfit(req, res) {
 
 async function apiUpdateOutfit(req, res, id) {
   const input = await parseBody(req);
-  await supabase.from("outfits").update({
-    name: input.name,
-    occasion: input.occasion || null,
-    season: input.season || null,
-    weather: input.weather || [],
-    formality_level: input.formalityLevel || null,
-    style: input.style || [],
-    score: input.score || null,
-  }).eq("id", id);
-
+  await sql(
+    `UPDATE outfits SET name=$1, occasion=$2, season=$3, weather=$4, formality_level=$5, style=$6, score=$7 WHERE id=$8`,
+    [input.name, input.occasion || null, input.season || null,
+     input.weather || [], input.formalityLevel || null, input.style || [], input.score || null, id]
+  );
   if ("garmentIds" in input) {
-    await supabase.from("outfit_items").delete().eq("outfit_id", id);
+    await sql("DELETE FROM outfit_items WHERE outfit_id = $1", [id]);
     if (Array.isArray(input.garmentIds) && input.garmentIds.length) {
-      await supabase.from("outfit_items").insert(
-        input.garmentIds.map((gid, i) => ({ outfit_id: id, garment_id: gid, position: i }))
+      await sql(
+        `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3})`).join(",")}`,
+        input.garmentIds.flatMap(gid => [id, gid])
       );
     }
   }
-
-  const { data: updated } = await supabase.from("outfits").select("*").eq("id", id).single();
-  const { data: items } = await supabase.from("outfit_items").select("item_id").eq("outfit_id", id);
+  const o = await sqlOne("SELECT * FROM outfits WHERE id = $1", [id]);
+  const items = await sql("SELECT item_id FROM outfit_items WHERE outfit_id = $1", [id]);
   json(res, 200, {
-    id: updated.id, name: updated.name, occasion: updated.occasion, season: updated.season,
-    garmentIds: (items || []).map(i => i.item_id), weather: updated.weather || [],
-    formalityLevel: updated.formality_level, style: updated.style || [],
-    createdAt: updated.created_at, updatedAt: updated.updated_at,
+    id: o.id, name: o.name, occasion: o.occasion, season: o.season,
+    garmentIds: items.map(i => i.item_id), weather: o.weather || [],
+    formalityLevel: o.formality_level, style: o.style || [],
+    createdAt: o.created_at, updatedAt: o.updated_at,
   });
 }
 
 async function apiDeleteOutfit(req, res, id) {
-  await supabase.from("outfit_items").delete().eq("outfit_id", id);
-  await supabase.from("outfits").delete().eq("id", id);
+  await sql("DELETE FROM outfit_items WHERE outfit_id = $1", [id]);
+  await sql("DELETE FROM outfits WHERE id = $1", [id]);
   json(res, 200, { deleted: true, id });
 }
 
 async function apiSuggestOutfits(req, res) {
   const url = new URL(req.url, "http://localhost");
   const season = url.searchParams.get("season") || "mild";
-  const occasion = url.searchParams.get("occasion") || "casual";
-
-  const { data: items, error } = await supabase
-    .from("items")
-    .select("*")
-    .eq("active", true);
-  if (error) throw error;
-
-  if (!items?.length) return json(res, 200, { outfits: [], message: "Add garments first" });
-
-  const suggestions = generateOutfitSuggestions(items, { season, occasion });
+  const rows = await sql("SELECT * FROM items WHERE active = true");
+  if (!rows.length) return json(res, 200, { outfits: [], message: "Add garments first" });
+  const suggestions = generateOutfitSuggestions(rows, { season });
   json(res, 200, { outfits: suggestions });
 }
 
@@ -634,7 +517,7 @@ async function handleApi(req, res) {
     return false;
   } catch (err) {
     console.error("[wardrobe]", err.message);
-    json(res, err.status || 500, { error: err.message || "Internal server error" });
+    json(res, 500, { error: err.message || "Internal server error" });
     return true;
   }
 }
@@ -670,7 +553,7 @@ const server = createHttpServer(async (req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`[wardrobe] http://localhost:${PORT}`);
-  console.log(`[wardrobe] Supabase: ${SUPABASE_URL ? "connected" : "MISSING"}`);
+  console.log(`[wardrobe] Database: ${DATABASE_URL ? "connected" : "MISSING"}`);
   console.log(`[wardrobe] Gemini: ${GEMINI_API_KEY ? "configured" : "MISSING"}`);
 });
 
