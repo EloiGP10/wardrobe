@@ -1123,3 +1123,25 @@ button { font: inherit; }
   .outfit-builder-overlay { align-items: center; padding: 24px; }
   .outfit-builder { border-radius: 8px; }
 }
+
+/* Import drop overlay */
+.import-drop-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(110, 48, 46, 0.15);
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
+}
+.import-drop-target {
+  background: var(--paper); border: 3px dashed var(--accent);
+  border-radius: 16px; padding: 48px 32px; text-align: center;
+  max-width: 360px;
+}
+.import-drop-target h2 { margin: 16px 0 8px; font-size: 1.2rem; }
+.import-drop-target p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+
+/* Import button in header */
+.gallery-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.import-button-header { font-size: 0.8rem; padding: 6px 12px; }
+
+/* Dragging state */
+.app-shell.is-dragging { filter: brightness(0.95); }

@@ -720,6 +720,9 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("closet");
+  const [importing, setImporting] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef(null);
 
   const reload = async () => {
     try {
@@ -742,6 +745,52 @@ export function App() {
   };
 
   useEffect(() => { reload(); }, []);
+
+  const handleImport = useCallback(async (files) => {
+    const images = [...files].filter(f => f.type.startsWith("image/"));
+    if (!images.length) return;
+    setImporting(true); setError(""); setDragging(false);
+    for (const file of images) {
+      try {
+        const reader = new FileReader();
+        const dataUrl = await new Promise((resolve, reject) => {
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error("Could not read file"));
+          reader.readAsDataURL(file);
+        });
+        const base64 = dataUrl.split(",")[1];
+        const res = await fetch("/api/garments/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64: base64, mimeType: file.type }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || "Import failed");
+        }
+        const newItem = await res.json();
+        setItems(current => [newItem, ...current]);
+      } catch (e) {
+        setError(`Import failed: ${e.message}`);
+      }
+    }
+    setImporting(false);
+  }, []);
+
+  useEffect(() => {
+    let depth = 0;
+    const onDragEnter = (e) => { if (![...e.dataTransfer.types].includes("Files")) return; e.preventDefault(); depth++; setDragging(true); };
+    const onDragOver = (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); };
+    const onDragLeave = (e) => { e.preventDefault(); depth = Math.max(0, depth - 1); if (!depth) setDragging(false); };
+    const onDrop = (e) => { e.preventDefault(); depth = 0; setDragging(false); handleImport(e.dataTransfer.files); };
+    const onPaste = (e) => { const files = [...e.clipboardData.files]; if (files.some(f => f.type.startsWith("image/"))) { e.preventDefault(); handleImport(files); } };
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    window.addEventListener("paste", onPaste);
+    return () => { window.removeEventListener("dragenter", onDragEnter); window.removeEventListener("dragover", onDragOver); window.removeEventListener("dragleave", onDragLeave); window.removeEventListener("drop", onDrop); window.removeEventListener("paste", onPaste); };
+  }, [handleImport]);
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
 
@@ -815,7 +864,18 @@ export function App() {
   };
 
   return (
-    <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
+    <div className={`app-shell${selectedItem ? " has-selection" : ""}${dragging ? " is-dragging" : ""}`}>
+      <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleImport(e.target.files); e.target.value = ""; }} />
+      {dragging && (
+        <div className="import-drop-overlay">
+          <div className="import-drop-target">
+            <Plus size={34} weight="light" />
+            <h2>Drop clothing images</h2>
+            <p>Gemini will analyze each piece automatically</p>
+          </div>
+        </div>
+      )}
+
       <nav className="tab-bar">
         <button type="button" className={activeTab === "closet" ? "active" : ""} onClick={() => setActiveTab("closet")}>
           Closet
@@ -830,6 +890,9 @@ export function App() {
         <header className="gallery-header">
           <div className="gallery-meta-row">
             <p className="piece-count">{items.length} {items.length === 1 ? "piece" : "pieces"}</p>
+            <button className="primary-button import-button-header" onClick={() => fileInputRef.current?.click()} disabled={importing}>
+              <Plus size={14} weight="bold" /> {importing ? "Analyzing..." : "Import"}
+            </button>
           </div>
           <nav className="category-nav" aria-label="Filter wardrobe by item type">
             {TYPES.map((type) => (
