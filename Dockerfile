@@ -18,6 +18,8 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/server.mjs .
 COPY --from=build /app/package*.json ./
 
+RUN npm ci --omit=dev && mkdir -p /app/data/imported && chown -R node:node /app
+
 ENV NODE_ENV=production
 ENV PORT=3000
 
