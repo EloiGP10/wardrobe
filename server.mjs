@@ -1,6 +1,5 @@
-import { createServer as createViteServer } from "vite";
 import { createServer as createHttpServer } from "node:http";
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, existsSync, statSync, mkdirSync, copyFileSync, unlinkSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
@@ -24,7 +23,7 @@ if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
 
 const DATA_DIR = resolve(process.cwd(), "data");
 const UPLOAD_DIR = resolve(DATA_DIR, "imported");
-if (!existsSync(UPLOAD_DIR)) { require("node:fs").mkdirSync(UPLOAD_DIR, { recursive: true }); }
+if (!existsSync(UPLOAD_DIR)) { mkdirSync(UPLOAD_DIR, { recursive: true }); }
 
 // ─── JSON helpers ─────────────────────────────────────────────────────────────
 
@@ -80,7 +79,7 @@ async function saveLibraryFile(records) {
   mk(resolve(DATA_DIR), { recursive: true });
   const tmp = resolve(DATA_DIR, `library.json.${Date.now()}.tmp`);
   wf(tmp, JSON.stringify(records, null, 2) + "\n");
-  try { rn(tmp, resolve(DATA_DIR, "library.json")); } catch { require("node:fs").copyFileSync(tmp, resolve(DATA_DIR, "library.json")); ul(tmp, { force: true }); }
+  try { rn(tmp, resolve(DATA_DIR, "library.json")); } catch { copyFileSync(tmp, resolve(DATA_DIR, "library.json")); ul(tmp, { force: true }); }
 }
 
 // ─── Outfit rules ─────────────────────────────────────────────────────────────
@@ -186,8 +185,8 @@ async function apiDeleteGarment(req, res, id) {
     if (next.length === recs.length) return json(res, 404, { error: "Not found" });
     await saveLibraryFile(next);
   }
-  try { require("node:fs").unlinkSync(resolve(UPLOAD_DIR, `${id}-garment.png`)); } catch {}
-  try { require("node:fs").unlinkSync(resolve(UPLOAD_DIR, `${id}-modeled.png`)); } catch {}
+  try { unlinkSync(resolve(UPLOAD_DIR, `${id}-garment.png`)); } catch {}
+  try { unlinkSync(resolve(UPLOAD_DIR, `${id}-modeled.png`)); } catch {}
   json(res, 200, { deleted: true, id });
 }
 
