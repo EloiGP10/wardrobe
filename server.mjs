@@ -1,8 +1,9 @@
 import { createServer as createHttpServer } from "node:http";
 import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import { resolve, extname } from "path";
 import pg from "pg";
 import dotenv from "dotenv";
+import sharp from "sharp";
 
 dotenv.config();
 
@@ -65,6 +66,42 @@ function mapItem(g) {
     warmthLevel: g.warmth_level, formalityLevel: g.formality_level,
     trendScore: g.trend_score, brand: g.brand, description: g.description,
   };
+}
+
+// ─── Background Removal ─────────────────────────────────────────────────────────
+
+async function removeWhiteBackground(buffer) {
+  try {
+    const image = sharp(buffer);
+    const metadata = await image.metadata();
+    if (!metadata.width || !metadata.height) return buffer;
+
+    const { data, info } = await image
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const threshold = 240;
+    const alpha = Buffer.alloc(info.width * info.height);
+
+    for (let i = 0; i < info.width * info.height; i++) {
+      const r = data[i * 3];
+      const g = data[i * 3 + 1];
+      const b = data[i * 3 + 2];
+      const isWhite = r >= threshold && g >= threshold && b >= threshold;
+      alpha[i] = isWhite ? 0 : 255;
+    }
+
+    return await sharp(data, {
+      raw: { width: info.width, height: info.height, channels: 3 },
+    })
+      .joinChannel(alpha)
+      .png()
+      .toBuffer();
+  } catch (e) {
+    console.error("[bg-remove]", e.message);
+    return buffer;
+  }
 }
 
 // ─── Gemini Vision ────────────────────────────────────────────────────────────
@@ -366,7 +403,8 @@ async function apiImportGarment(req, res) {
   const imagePath = `${UPLOAD_DIR}/${filename}`;
 
   const buffer = Buffer.from(imageBase64, "base64");
-  writeFileSync(imagePath, buffer);
+  const cleanBuffer = await removeWhiteBackground(buffer);
+  writeFileSync(imagePath, cleanBuffer);
 
   const rows = await sql(`INSERT INTO items
     (slug, name, part, color, secondary_color, palette, tags, image_url, thumbnail_url,
