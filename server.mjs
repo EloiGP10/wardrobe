@@ -1,6 +1,6 @@
 import { createServer as createHttpServer } from "node:http";
-import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve, extname } from "path";
+import { readFileSync, existsSync, statSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { resolve, extname, basename as pathBasename } from "path";
 import pg from "pg";
 import dotenv from "dotenv";
 import sharp from "sharp";
@@ -17,6 +17,7 @@ const DIST_DIR = resolve(process.env.DIST_DIR || "dist");
 const DATA_DIR = resolve(process.cwd(), "data");
 const UPLOAD_DIR = resolve(DATA_DIR, "imported");
 if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
+if (!existsSync(resolve(UPLOAD_DIR, "pending"))) mkdirSync(resolve(UPLOAD_DIR, "pending"), { recursive: true });
 
 const SUPABASE_PUBLIC_URL = (process.env.SUPABASE_PUBLIC_URL || "https://supabase-eloigfamily.duckdns.org").replace(/\/+$/, "");
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
@@ -158,7 +159,7 @@ function mapItem(g) {
 
 // ─── Background Removal ─────────────────────────────────────────────────────────
 
-const PART_ALLOWED = ["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"];
+const PART_ALLOWED = ["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes", "dress", "one-piece", "outerwear", "accessory"];
 const FIT_ALLOWED = ["slim", "regular", "loose", "oversized", "petite", "tall"];
 const GENDER_ALLOWED = ["male", "female", "unisex"];
 
@@ -288,7 +289,9 @@ async function analyzeGarmentSafe(imageBase64, mimeType) {
     }
   }
   console.error(`[import][gemini] all models failed (${models.join(", ")}): ${lastErr?.message}`);
-  return { ...GEMINI_FALLBACK };
+  const e = new Error("ANALYSIS_FAILED");
+  e.code = "ANALYSIS_FAILED";
+  throw e;
 }
 
 // ─── Outfit Rules Engine ─────────────────────────────────────────────────────
@@ -364,6 +367,30 @@ function scoreWarmth(a, b, targetSeason) {
   const total = ((a.warmth_level || 3) + (b.warmth_level || 3)) / 2;
   const diff = Math.abs(total - target);
   return diff < 1 ? 5 : diff < 2 ? 3 : 1;
+}
+
+function garmentHasMetadata(g) {
+  return (g && Array.isArray(g.style) && g.style.length > 0) ||
+    (g && Array.isArray(g.occasion) && g.occasion.length > 0) ||
+    (g && typeof g.formality_level === "number" && g.formality_level !== 3) ||
+    (g && typeof g.color === "string" && g.color) ||
+    (g && Array.isArray(g.season) && g.season.length > 0);
+}
+
+function outfitConflicts(top, bottom) {
+  const conflicts = [];
+  const ft = top?.formality_level != null ? top.formality_level : 3;
+  const fb = bottom?.formality_level != null ? bottom.formality_level : 3;
+  if (Math.abs(ft - fb) >= 3) {
+    const high = ft > fb ? "el top es mucho más formal" : "los pantalones son mucho más formales";
+    conflicts.push(`${high} que la otra prenda`);
+  }
+  const wt = top?.warmth_level != null ? top.warmth_level : 3;
+  const wb = bottom?.warmth_level != null ? bottom.warmth_level : 3;
+  if (Math.abs(wt - wb) >= 3) {
+    conflicts.push("una prenda es muy cálida y la otra muy ligera");
+  }
+  return conflicts;
 }
 
 function generateOutfitSuggestions(items, context = {}) {
@@ -550,11 +577,70 @@ async function apiImportGarment(req, res) {
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-  const { imageBase64, mimeType = "image/png" } = body;
+  const { imageBase64, mimeType = "image/png", pendingFilename, metadata: manualMetadata } = body;
+
+  // Modo 2: completar una importación con metadatos manuales (Gemini falló)
+  if (pendingFilename && manualMetadata) {
+    const safeName = pathBasename(pendingFilename);
+    if (!safeName || !/^pending-.*\.png$/.test(safeName)) return json(res, 400, { error: "invalid pending file" });
+    const src = resolve(UPLOAD_DIR, "pending", safeName);
+    if (!existsSync(src)) return json(res, 410, { error: "pending image expired" });
+    const clean = readFileSync(src);
+    const slug = `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const filename = `${slug}.png`;
+    writeFileSync(resolve(UPLOAD_DIR, filename), clean);
+    try { await uploadToStorage(filename, clean); } catch {}
+
+    const part = PART_ALLOWED.includes(manualMetadata.part) ? manualMetadata.part : "upperbody";
+    const m = {
+      name: manualMetadata.name || null,
+      part,
+      color: manualMetadata.color ? manualMetadata.color : null,
+      secondary_color: null,
+      palette: [],
+      tags: manualMetadata.tags || [],
+      gender: null,
+      style: manualMetadata.style || [],
+      season: manualMetadata.season || [],
+      occasion: manualMetadata.occasion || [],
+      material: null, pattern: null, fit: null, neckline: null, length: null,
+      details: [], weather: [],
+      warmth_level: manualMetadata.warmth_level ?? null,
+      formality_level: manualMetadata.formality_level ?? null,
+      trend_score: null, brand: null, description: null,
+    };
+    const rows = await sql(`INSERT INTO items
+      (slug, name, part, color, secondary_color, palette, tags, image_url, thumbnail_url,
+       gender, style, season, occasion, material, pattern, fit, neckline, length,
+       details, weather, warmth_level, formality_level, trend_score, brand, description, user_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+      RETURNING *`, [
+      slug, m.name || "Importada", part, m.color, m.secondary_color, JSON.stringify(m.palette || []),
+      m.tags, `/api/library/${filename}`, `/api/library/${filename}`,
+      m.gender, m.style, m.season, m.occasion, m.material, m.pattern, m.fit, m.neckline, m.length,
+      m.details, m.weather, m.warmth_level, m.formality_level, m.trend_score, m.brand, m.description, uid,
+    ]);
+    try { rmSync(src, { force: true }); } catch {}
+    return json(res, 201, { ...mapItem(rows[0]), metadata: m, manual: true });
+  }
 
   if (!imageBase64) return json(res, 400, { error: "imageBase64 required" });
 
-  const metadata = await analyzeGarmentSafe(imageBase64, mimeType);
+  let metadata;
+  try {
+    metadata = await analyzeGarmentSafe(imageBase64, mimeType);
+  } catch (err) {
+    if (err && err.code === "ANALYSIS_FAILED") {
+      const slug = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const filename = `${slug}.png`;
+      const buffer = Buffer.from(imageBase64, "base64");
+      try { writeFileSync(`${UPLOAD_DIR}/pending/${filename}`, removeWhiteBackground ? await removeWhiteBackground(buffer) : buffer); }
+      catch (e) { writeFileSync(`${UPLOAD_DIR}/pending/${filename}`, buffer); }
+      const pendingPath = `/api/library/pending/${filename}`;
+      return json(res, 409, { error: "ANALYSIS_FAILED", needsManualMetadata: true, pendingPath });
+    }
+    return json(res, 502, { error: err.message });
+  }
   const part = PART_ALLOWED.includes(metadata.part) ? metadata.part : "upperbody";
 
   const slug = `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -709,7 +795,27 @@ async function apiSuggestOutfits(req, res) {
   const accs = rows.filter(i => i.part === "accessories_up");
   if (!tops.length || !bottoms.length) return json(res, 200, { outfits: [], message: "Need at least one top and one bottom" });
 
+  // Outfits ya guardados del usuario: para evitar repetir combinaciones.
+  let savedKeys = new Set();
+  try {
+    const saved = await sql("SELECT id FROM outfits WHERE user_id = $1", [uid]);
+    const savedItems = await Promise.all(saved.map(async (o) => {
+      const it = await sql("SELECT item_id FROM outfit_items WHERE outfit_id = $1", [o.id]);
+      return it.map(i => i.item_id);
+    }));
+    savedItems.forEach(ids => { if (Array.isArray(ids) && ids.length) savedKeys.add([...ids].sort().join(",")); });
+  } catch { savedKeys = new Set(); }
+
   const buildOutfit = (top, bottom) => {
+    const conflicts = outfitConflicts(top, bottom);
+    const ft = top?.formality_level != null ? top.formality_level : 3;
+    const fb = bottom?.formality_level != null ? bottom.formality_level : 3;
+    const wt = top?.warmth_level != null ? top.warmth_level : 3;
+    const wb = bottom?.warmth_level != null ? bottom.warmth_level : 3;
+
+    // Restricciones duras: combinaciones absurdas se descartan por completo.
+    const hardReject = Math.abs(ft - fb) >= 3; // p.ej. esmoquin + chándal
+
     const bestShoes = shoes.reduce((best, shoe) => {
       let s = scoreColorCombo(top, shoe) + scoreColorCombo(bottom, shoe);
       s += scoreStyleMatch(top, shoe) + scoreStyleMatch(bottom, shoe);
@@ -737,12 +843,34 @@ async function apiSuggestOutfits(req, res) {
       + scoreFormality(top, bottom) + scoreWarmth(top, bottom, season)
       + (bestShoes.item ? bestShoes.score * 0.3 : 0) + (bestAcc.item ? bestAcc.score * 0.2 : 0);
 
+    // Coherencia del conjunto completo (top+bottom+calzado+accesorio)
+    if (bestShoes.item) {
+      score += scoreStyleMatch(top, bestShoes.item) * 0.5
+            + scoreStyleMatch(bottom, bestShoes.item) * 0.5;
+    }
+    if (bestAcc.item) {
+      score += scoreColorCombo(bottom, bestAcc.item) * 0.3;
+    }
+
+    // Metadatos pobres: penalización conservadora para no "ganar por azar"
+    const missingTop = !garmentHasMetadata(top);
+    const missingBottom = !garmentHasMetadata(bottom);
+    if (missingTop || missingBottom) score -= 6;
+
+    // Evitar repetir combinaciones ya guardadas
+    const key = [...garmentIds].sort().join(",");
+    const alreadySaved = savedKeys.has(key);
+    if (alreadySaved) score -= 100;
+
     const reasons = [];
     if (scoreColorCombo(top, bottom) >= 9) reasons.push("gran combinación de color");
     if (scoreStyleMatch(top, bottom) >= 6) reasons.push("estilos que combinan");
     if (scoreFormality(top, bottom) >= 6) reasons.push("etiqueta similar");
+    if (missingTop || missingBottom) reasons.push("prenda con análisis incompleto");
 
-    return { top, bottom, bestShoes, bestAcc, garmentIds, occasion: occasionLabel, score: Math.round(score * 100) / 100, reasons };
+    return { top, bottom, bestShoes, bestAcc, garmentIds, occasion: occasionLabel,
+      score: Math.round(score * 100) / 100, reasons, conflicts,
+      missingMetadata: missingTop || missingBottom, hardReject };
   };
 
   let ranked = [];
@@ -800,6 +928,7 @@ async function apiSuggestOutfits(req, res) {
   const suggestions = [];
   const seen = new Set();
   for (const o of ranked) {
+    if (o.hardReject) continue;
     const key = [...o.garmentIds].sort().join(",");
     if (seen.has(key)) continue;
     seen.add(key);
@@ -809,6 +938,8 @@ async function apiSuggestOutfits(req, res) {
       garmentIds: o.garmentIds,
       score: o.score,
       reasons: o.reasons,
+      conflicts: o.conflicts,
+      missingMetadata: o.missingMetadata,
       mode,
       season: [...new Set([...(o.top.season || []), ...(o.bottom.season || [])])],
       weather: [...new Set([...(o.top.weather || []), ...(o.bottom.weather || [])])],

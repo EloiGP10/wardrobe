@@ -579,11 +579,13 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
   const [suggestions, setSuggestions] = useState([]);
   const [suggestIndex, setSuggestIndex] = useState(0);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [hasGenerated, setHasGenerated] = useState(false);
   const [selectedGarments, setSelectedGarments] = useState(new Set());
   const [outfitName, setOutfitName] = useState("");
   const [outfitOccasion, setOutfitOccasion] = useState("casual");
   const garmentsById = useMemo(() => Object.fromEntries(items.map((g) => [g.id, g])), [items]);
   const [outfitTab, setOutfitTab] = useState("guardados");
+  const [toast, setToast] = useState(null);
 
   const [mode, setMode] = useState("smart");
   const [mood, setMood] = useState("casual");
@@ -649,6 +651,7 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
       const res = await fetch(`/api/outfits/suggest?${q}`, { headers });
       const data = await res.json();
       setSuggestions(data.outfits || []);
+      setHasGenerated(true);
       setSuggestIndex(0);
     } finally { setLoadingSuggestions(false); }
   };
@@ -657,6 +660,8 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
     if (liked) {
       const created = await onCreate({ name: s.name, occasion: s.occasion, garmentIds: s.garmentIds });
       if (created?.id) {
+        setToast("Outfit guardado ✓");
+        setTimeout(() => setToast(null), 2200);
         const headers = {};
         if (currentUser) headers["x-user-id"] = currentUser.userId;
         await fetch("/api/outfits/feedback", {
@@ -735,6 +740,14 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
   };
 
   const handleSaveOutfit = async () => {
+    const sel = [...selectedGarments].map(id => garmentsById[id]).filter(Boolean);
+    const hasTop = sel.some(g => g.part === "upperbody" || g.part === "wholebody_up" || g.part === "dress" || g.part === "one-piece");
+    const hasBottom = sel.some(g => g.part === "lowerbody" || g.part === "dress" || g.part === "one-piece");
+    if (sel.length && (!hasTop || !hasBottom)) {
+      setToast("Añade una parte superior e inferior para que sea un look completo");
+      setTimeout(() => setToast(null), 2600);
+      return;
+    }
     const payload = { name: outfitName || `Conjunto ${outfits.length + 1}`, occasion: outfitOccasion, garmentIds: [...selectedGarments] };
     if (editingId) await onUpdate(editingId, payload);
     else await onCreate(payload);
@@ -836,6 +849,14 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
                       {s.reasons?.length > 0 && (
                         <div className="tinder-reasons">{s.reasons.map((r, i) => <span key={i} className="reason-tag">{r}</span>)}</div>
                       )}
+                      {s.conflicts?.length > 0 && (
+                        <div className="tinder-reasons">
+                          {s.conflicts.map((c, i) => <span key={i} className="reason-tag warn">⚠ {c}</span>)}
+                        </div>
+                      )}
+                      {s.missingMetadata && (
+                        <div className="missing-meta-note">Alguna prenda no tiene análisis completo, toma este look con precaución.</div>
+                      )}
                     </div>
                     <div className="tinder-actions">
                       <button className="tinder-skip" onClick={() => setSuggestIndex((i) => i + 1)} aria-label="Pasar" title="Pasar">
@@ -855,7 +876,11 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
           ) : (
             <div className="outfit-empty-state">
               <Sparkle size={32} weight="light" />
-              <p>Pulsa <strong>Generar</strong> para obtener ideas de outfits con tus prendas.</p>
+              {hasGenerated && suggestions.length === 0 ? (
+                <p>No hay combinaciones que cumplan los criterios. Prueba a cambiar el modo o subir más prendas (top y bottom).</p>
+              ) : (
+                <p>Pulsa <strong>Generar</strong> para obtener ideas de outfits con tus prendas.</p>
+              )}
             </div>
           )}
         </>
@@ -897,6 +922,19 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
             </header>
 
             <div className="outfit-builder-preview">{renderCollage([...selectedGarments])}</div>
+
+            <div className="outfit-builder-selected">
+              {[...selectedGarments].map(id => {
+                const g = garmentsById[id];
+                if (!g) return null;
+                return (
+                  <span key={id} className="builder-chip">
+                    {g.name}
+                    <button type="button" className="builder-chip-remove" aria-label={`Quitar ${g.name}`} onClick={() => setSelectedGarments((cur) => { const n = new Set(cur); n.delete(id); return n; })}><X size={12} weight="bold" /></button>
+                  </span>
+                );
+              })}
+            </div>
 
             <div className="outfit-builder-fields">
               <label className="field">
@@ -951,7 +989,115 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
           </div>
         </div>
       )}
+      {toast && <div className="toast" role="status">{toast}</div>}
     </section>
+  );
+}
+
+const PART_OPTIONS = [
+  "upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"
+];
+
+const STYLE_OPTIONS = ["casual", "formal", "sport", "streetwear", "trendy", "minimal", "elegant", "boho", "vintage", "grunge"];
+const OCCASION_OPTIONS = ["casual", "work", "party", "sport", "everyday", "formal", "date", "travel", "home"];
+const SEASON_OPTIONS = ["spring", "summer", "autumn", "winter"];
+const COLOR_OPTIONS = [
+  { name: "Negro", hex: "#1a1a1a" },
+  { name: "Blanco", hex: "#f2f2f2" },
+  { name: "Gris", hex: "#8e8e8e" },
+  { name: "Azul", hex: "#2c5f8a" },
+  { name: "Marino", hex: "#1f2d55" },
+  { name: "Rojo", hex: "#c0392b" },
+  { name: "Verde", hex: "#3d7a4a" },
+  { name: "Amarillo", hex: "#e8c14d" },
+  { name: "Naranja", hex: "#e07b39" },
+  { name: "Rosa", hex: "#e08aa8" },
+  { name: "Morado", hex: "#6d4a8f" },
+  { name: "Marrón", hex: "#6b4a2f" },
+  { name: "Beige", hex: "#c9b18a" },
+  { name: "Crema", hex: "#efe6d4" },
+];
+
+const PART_LABELS_TO = { upperbody: "Parte superior", wholebody_up: "Abrigo / chaqueta", lowerbody: "Parte inferior", accessories_up: "Accesorio", shoes: "Calzado" };
+
+function ManualImportModal({ pendingManual, onSubmit, onCancel, submitting }) {
+  const [form, setForm] = useState({
+    part: "upperbody",
+    name: "",
+    color: "",
+    style: [],
+    occasion: [],
+    season: [],
+    warmth_level: 3,
+    formality_level: 3,
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const toggle = (k, v) => set(k, form[k].includes(v) ? form[k].filter(x => x !== v) : [...form[k], v]);
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Importar prenda con metadatos manuales">
+      <div className="modal-card manual-modal">
+        <div className="manual-modal-head">
+          <h3>Completa los datos de la prenda</h3>
+          <button className="icon-button" onClick={onCancel} aria-label="Cancelar"><X size={18} /></button>
+        </div>
+        {pendingManual?.imageBase64 && <img className="manual-thumb" src={`data:image/png;base64,${pendingManual.imageBase64}`} alt={pendingManual?.fileName || "prenda"} />}
+        {pendingManual?.fileName && <p className="manual-file">{pendingManual.fileName}</p>}
+        <p className="manual-hint">Gemini no pudo analizar esta foto. Indica los datos mínimos para importarla.</p>
+
+        <label className="manual-field">
+          <span>Tipo de prenda</span>
+          <select value={form.part} onChange={e => set("part", e.target.value)}>
+            {PART_OPTIONS.map(p => <option key={p} value={p}>{PART_LABELS_TO[p]}</option>)}
+          </select>
+        </label>
+
+        <label className="manual-field">
+          <span>Nombre (opcional)</span>
+          <input value={form.name} onChange={e => set("name", e.target.value)} placeholder="p. ej. Camiseta blanca básica" />
+        </label>
+
+        <label className="manual-field">
+          <span>Color</span>
+          <select value={form.color} onChange={e => set("color", e.target.value)}>
+            <option value="">Selecciona</option>
+            {COLOR_OPTIONS.map(c => <option key={c.hex} value={c.hex}>{c.name}</option>)}
+          </select>
+        </label>
+
+        <div className="manual-field">
+          <span>Estilos</span>
+          <div className="chip-row">{STYLE_OPTIONS.map(s => <button key={s} type="button" className={form.style.includes(s) ? "chip active" : "chip"} onClick={() => toggle("style", s)}>{s}</button>)}</div>
+        </div>
+
+        <div className="manual-field">
+          <span>Ocasión</span>
+          <div className="chip-row">{OCCASION_OPTIONS.map(o => <button key={o} type="button" className={form.occasion.includes(o) ? "chip active" : "chip"} onClick={() => toggle("occasion", o)}>{o}</button>)}</div>
+        </div>
+
+        <div className="manual-field">
+          <span>Temporada</span>
+          <div className="chip-row">{SEASON_OPTIONS.map(s => <button key={s} type="button" className={form.season.includes(s) ? "chip active" : "chip"} onClick={() => toggle("season", s)}>{s}</button>)}</div>
+        </div>
+
+        <div className="manual-field">
+          <span>Calidez: {form.warmth_level}/5</span>
+          <input type="range" min={1} max={5} value={form.warmth_level} onChange={e => set("warmth_level", +e.target.value)} />
+        </div>
+
+        <div className="manual-field">
+          <span>Formalidad: {form.formality_level}/5</span>
+          <input type="range" min={1} max={5} value={form.formality_level} onChange={e => set("formality_level", +e.target.value)} />
+        </div>
+
+        <div className="manual-actions">
+          <button className="secondary-button" onClick={onCancel} disabled={submitting}>Cancelar</button>
+          <button className="primary-button" onClick={() => onSubmit(form)} disabled={submitting}>
+            {submitting ? "Importando…" : "Importar prenda"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -965,6 +1111,10 @@ export function App() {
   const [activeTab, setActiveTab] = useState("closet");
   const [importing, setImporting] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [pendingManual, setPendingManual] = useState(null);
+  const [manualProgress, setManualProgress] = useState(0);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, fileName: "" });
+  const cancelImportRef = useRef(false);
   const [currentUser, setCurrentUser] = useState(() => {
     try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; }
   });
@@ -1067,7 +1217,13 @@ export function App() {
     const images = [...files].filter(f => f.type.startsWith("image/"));
     if (!images.length) return;
     setImporting(true); setError(""); setDragging(false);
-    for (const file of images) {
+    cancelImportRef.current = false;
+    setImportProgress({ current: 0, total: images.length, fileName: "" });
+    let failed = 0;
+    for (let idx = 0; idx < images.length; idx++) {
+      const file = images[idx];
+      setImportProgress(p => ({ ...p, current: idx, fileName: file.name }));
+      if (cancelImportRef.current) break;
       try {
         const reader = new FileReader();
         const dataUrl = await new Promise((resolve, reject) => {
@@ -1083,16 +1239,26 @@ export function App() {
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || "Import failed");
+          if (err.needsManualMetadata) {
+            setPendingManual({ fileName: file.name, pendingPath: err.pendingPath, imageBase64: base64 });
+            cancelImportRef.current = true;
+            break;
+          }
+          failed++;
+          setError(failed === 1 ? `No se pudo importar "${file.name}": ${err.error || "error desconocido"}` : `Algunas prendas no se importaron (${failed} fallos).`);
+          continue;
         }
         const newItem = await res.json();
         setItems(current => [newItem, ...current]);
+        setImportProgress(p => ({ ...p, current: idx + 1, fileName: "" }));
       } catch (e) {
-        setError(`Import failed: ${e.message}`);
+        failed++;
+        setError(`No se pudo importar "${file.name}": ${e.message}`);
       }
     }
     setImporting(false);
-  }, []);
+    setImportProgress({ current: 0, total: 0, fileName: "" });
+  }, [authHeaders]);
 
   useEffect(() => {
     let depth = 0;
@@ -1108,6 +1274,30 @@ export function App() {
     window.addEventListener("paste", onPaste);
     return () => { window.removeEventListener("dragenter", onDragEnter); window.removeEventListener("dragover", onDragOver); window.removeEventListener("dragleave", onDragLeave); window.removeEventListener("drop", onDrop); window.removeEventListener("paste", onPaste); };
   }, [handleImport]);
+
+  const submitManualImport = useCallback(async (values) => {
+    if (!pendingManual) return;
+    setManualProgress(1);
+    try {
+      const res = await fetch("/api/garments/import", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ pendingFilename: pendingManual.pendingPath.split("/").pop(), metadata: values }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Import failed");
+      }
+      const newItem = await res.json();
+      setItems(current => [newItem, ...current]);
+      setPendingManual(null);
+      setManualProgress(0);
+    } catch (e) {
+      setError(`No se pudo completar la importación: ${e.message}`);
+    } finally {
+      setManualProgress(0);
+    }
+  }, [pendingManual, authHeaders]);
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
 
@@ -1215,6 +1405,15 @@ export function App() {
         </div>
       )}
 
+      {pendingManual && (
+        <ManualImportModal
+          pendingManual={pendingManual}
+          onSubmit={submitManualImport}
+          onCancel={() => { setPendingManual(null); setManualProgress(0); }}
+          submitting={manualProgress === 1}
+        />
+      )}
+
       <nav className="tab-bar">
         <button type="button" className={activeTab === "closet" ? "active" : ""} onClick={() => setActiveTab("closet")}>
           Closet
@@ -1247,6 +1446,16 @@ export function App() {
             ))}
           </nav>
         </header>
+
+        {importing && (
+          <div className="import-progress">
+            <div className="import-progress-text">
+              <span>{importProgress.fileName ? `Analizando «${importProgress.fileName}»…` : "Preparando…"}</span>
+              <span className="import-progress-count">{importProgress.total ? `${importProgress.current}/${importProgress.total}` : ""}</span>
+            </div>
+            <button className="import-cancel" onClick={() => { cancelImportRef.current = true; }}>Cancelar</button>
+          </div>
+        )}
 
         {error && <p className="status error">{error}</p>}
         {!error && loading && <p className="status">Loading wardrobe</p>}
