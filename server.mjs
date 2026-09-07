@@ -637,8 +637,8 @@ async function apiCreateOutfit(req, res) {
   const outfit = rows[0];
   if (Array.isArray(input.garmentIds) && input.garmentIds.length) {
     await sql(
-      `INSERT INTO outfit_items (outfit_id, item_id, position, user_id) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3},$${input.garmentIds.length + 4})`).join(",")}`,
-      input.garmentIds.flatMap(gid => [outfit.id, gid, uid])
+      `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3})`).join(",")}`,
+      input.garmentIds.flatMap((gid, i) => [outfit.id, gid, i])
     );
   }
   json(res, 201, {
@@ -660,11 +660,11 @@ async function apiUpdateOutfit(req, res, id) {
      input.weather || [], input.formalityLevel || null, input.style || [], input.score || null, id, uid]
   );
   if ("garmentIds" in input) {
-    await sql("DELETE FROM outfit_items WHERE outfit_id = $1 AND user_id = $2", [id, uid]);
+    await sql("DELETE FROM outfit_items WHERE outfit_id = $1", [id]);
     if (Array.isArray(input.garmentIds) && input.garmentIds.length) {
       await sql(
-        `INSERT INTO outfit_items (outfit_id, item_id, position, user_id) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3},$${input.garmentIds.length + 4})`).join(",")}`,
-        input.garmentIds.flatMap(gid => [id, gid, uid])
+        `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3})`).join(",")}`,
+        input.garmentIds.flatMap((gid, i) => [id, gid, i])
       );
     }
   }
@@ -680,7 +680,9 @@ async function apiUpdateOutfit(req, res, id) {
 
 async function apiDeleteOutfit(req, res, id) {
   const uid = requireUser(req);
-  await sql("DELETE FROM outfit_items WHERE outfit_id = $1 AND user_id = $2", [id, uid]);
+  const existing = await sqlOne("SELECT id FROM outfits WHERE id = $1 AND user_id = $2", [id, uid]);
+  if (!existing) return json(res, 404, { error: "Not found" });
+  await sql("DELETE FROM outfit_items WHERE outfit_id = $1", [id]);
   await sql("DELETE FROM outfits WHERE id = $1 AND user_id = $2", [id, uid]);
   json(res, 200, { deleted: true, id });
 }
