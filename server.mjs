@@ -5,6 +5,8 @@ import pg from "pg";
 import dotenv from "dotenv";
 import sharp from "sharp";
 
+import { removeBackground } from "./lib/matting.mjs";
+
 dotenv.config();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
@@ -117,89 +119,27 @@ function mapItem(g) {
 
 // ─── Background Removal ─────────────────────────────────────────────────────────
 
+const PART_ALLOWED = ["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"];
+
+function sanitizeMetadata(meta) {
+  const m = { ...(meta || {}) };
+  if (!Array.isArray(m.palette)) m.palette = [];
+  if (!Array.isArray(m.tags)) m.tags = [];
+  if (!Array.isArray(m.style)) m.style = [];
+  if (!Array.isArray(m.season)) m.season = [];
+  if (!Array.isArray(m.occasion)) m.occasion = [];
+  if (!Array.isArray(m.details)) m.details = [];
+  if (!Array.isArray(m.weather)) m.weather = [];
+  return m;
+}
+
 async function removeWhiteBackground(buffer) {
-  try {
-    const image = sharp(buffer);
-    const metadata = await image.metadata();
-    if (!metadata.width || !metadata.height) return buffer;
-
-    const { data, info } = await image
-      .removeAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    const w = info.width;
-    const h = info.height;
-    const tolerance = 40;
-    const bgSet = new Uint8Array(w * h);
-    const queue = [];
-
-    const isWhite = (i) => {
-      const r = data[i * 3];
-      const g = data[i * 3 + 1];
-      const b = data[i * 3 + 2];
-      return Math.max(r, g, b) - Math.min(r, g, b) <= tolerance && r >= 255 - tolerance;
-    };
-
-    for (let x = 0; x < w; x++) {
-      if (isWhite(x)) { bgSet[x] = 1; queue.push(x); }
-      if (isWhite((h - 1) * w + x)) { bgSet[(h - 1) * w + x] = 1; queue.push((h - 1) * w + x); }
-    }
-    for (let y = 0; y < h; y++) {
-      if (isWhite(y * w)) { bgSet[y * w] = 1; queue.push(y * w); }
-      if (isWhite(y * w + w - 1)) { bgSet[y * w + w - 1] = 1; queue.push(y * w + w - 1); }
-    }
-
-    const dirs = [1, -1, w, -w];
-    for (let qi = 0; qi < queue.length; qi++) {
-      const cur = queue[qi];
-      for (const d of dirs) {
-        const n = cur + d;
-        if (n < 0 || n >= bgSet.length) continue;
-        if (bgSet[n]) continue;
-        const nx = n % w;
-        if (Math.abs(nx - (cur % w)) > 1) continue;
-        if (isWhite(n)) { bgSet[n] = 1; queue.push(n); }
-      }
-    }
-
-    const alpha = Buffer.alloc(w * h);
-    for (let i = 0; i < w * h; i++) {
-      alpha[i] = bgSet[i] ? 0 : 255;
-    }
-
-    const feathered = Buffer.alloc(w * h);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = y * w + x;
-        if (alpha[i] === 255) { feathered[i] = 255; continue; }
-        let nearBg = false;
-        for (let dy = -1; dy <= 1 && !nearBg; dy++) {
-          for (let dx = -1; dx <= 1 && !nearBg; dx++) {
-            const nx = x + dx, ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-            if (data[(ny * w + nx) * 3] !== 255 && !bgSet[ny * w + nx] && alpha[ny * w + nx] === 255) nearBg = true;
-          }
-        }
-        feathered[i] = nearBg ? 128 : 0;
-      }
-    }
-
-    return await sharp(data, {
-      raw: { width: w, height: h, channels: 3 },
-    })
-      .joinChannel(Buffer.from(feathered))
-      .png()
-      .toBuffer();
-  } catch (e) {
-    console.error("[bg-remove]", e.message);
-    return buffer;
-  }
+  return removeBackground(buffer);
 }
 
 // ─── Gemini Vision ────────────────────────────────────────────────────────────
 
-async function analyzeGarmentWithGemini(imageBase64, mimeType = "image/png") {
+async function analyzeGarmentWithGemini(imageBase64, mimeType = "image/png", modelName = "gemini-3.6-flash") {
   if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not configured");
 
   const prompt = `Analyze this clothing item image and extract ALL of the following metadata as JSON. Be as precise as possible. Return ONLY valid JSON, no markdown.
@@ -229,17 +169,21 @@ async function analyzeGarmentWithGemini(imageBase64, mimeType = "image/png") {
   "tags": ["array of relevant tags for searching and matching"]
 }`;
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType, data: imageBase64 } }] }],
         generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
-      })
+      }),
+      signal: controller.signal,
     }
   );
+  clearTimeout(timer);
 
   if (!response.ok) {
     const err = await response.text();
@@ -250,7 +194,50 @@ async function analyzeGarmentWithGemini(imageBase64, mimeType = "image/png") {
   const text = result.candidates?.[0]?.content?.parts?.[0]?.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("Gemini did not return valid JSON");
-  return JSON.parse(jsonMatch[0]);
+  return sanitizeMetadata(JSON.parse(jsonMatch[0]));
+}
+
+const GEMINI_FALLBACK = {
+  name: "Imported piece",
+  part: "upperbody",
+  gender: "unisex",
+  color: null,
+  secondary_color: null,
+  palette: [],
+  style: [],
+  season: [],
+  occasion: [],
+  material: null,
+  pattern: null,
+  fit: null,
+  neckline: null,
+  length: null,
+  details: [],
+  weather: [],
+  warmth_level: 3,
+  formality_level: 3,
+  trend_score: 3,
+  brand: null,
+  description: "",
+  tags: [],
+};
+
+async function analyzeGarmentSafe(imageBase64, mimeType) {
+  const models = ["gemini-3.6-flash", "gemini-3-flash", "gemini-2.5-flash"];
+  let lastErr;
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const meta = await analyzeGarmentWithGemini(imageBase64, mimeType, model);
+        if (meta && typeof meta === "object" && Object.keys(meta).length) return meta;
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+      }
+    }
+  }
+  console.error(`[import][gemini] all models failed (${models.join(", ")}): ${lastErr?.message}`);
+  return { ...GEMINI_FALLBACK };
 }
 
 // ─── Outfit Rules Engine ─────────────────────────────────────────────────────
@@ -412,6 +399,34 @@ function generateOutfitSuggestions(items, context = {}) {
   return unique;
 }
 
+// ─── Outfit Feedback (teaching signal) ────────────────────────────────────────
+
+async function apiOutfitFeedback(req, res) {
+  const uid = requireUser(req);
+  const input = await parseBody(req);
+  const { outfitId, liked, occasion, season, weather } = input;
+
+  if (outfitId) {
+    const outfit = await sqlOne("SELECT id FROM outfits WHERE id = $1 AND user_id = $2", [outfitId, uid]);
+    if (!outfit) return json(res, 404, { error: "Outfit not found" });
+  }
+
+  await sql("DELETE FROM outfit_feedback WHERE outfit_id = $1", [outfitId]);
+  const insert = await sql(
+    `INSERT INTO outfit_feedback (outfit_id, liked, weather, occasion, season)
+     VALUES ($1,$2,$3,$4,$5)
+     RETURNING id`,
+    [
+      outfitId,
+      liked === true || liked === false ? liked : null,
+      weather || null,
+      occasion || null,
+      season || null,
+    ]
+  );
+  json(res, 200, { id: insert[0]?.id, outfitId, liked });
+}
+
 // ─── API Handlers ─────────────────────────────────────────────────────────────
 
 async function apiStatus(req, res) {
@@ -489,7 +504,8 @@ async function apiImportGarment(req, res) {
 
   if (!imageBase64) return json(res, 400, { error: "imageBase64 required" });
 
-  const metadata = await analyzeGarmentWithGemini(imageBase64, mimeType);
+  const metadata = await analyzeGarmentSafe(imageBase64, mimeType);
+  const part = PART_ALLOWED.includes(metadata.part) ? metadata.part : "upperbody";
 
   const slug = `g-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const filename = `${slug}.png`;
@@ -508,7 +524,7 @@ async function apiImportGarment(req, res) {
     RETURNING *`, [
     slug,
     metadata.name || "Imported piece",
-    metadata.part || "upperbody",
+    part,
     metadata.color || null,
     metadata.secondary_color || null,
     JSON.stringify(metadata.palette || []),
@@ -619,7 +635,7 @@ async function apiDeleteOutfit(req, res, id) {
 }
 
 async function apiSuggestOutfits(req, res) {
-  const uid = getUserId(req);
+  const uid = requireUser(req);
   const url = new URL(req.url, "http://localhost");
   const params = new URLSearchParams(url.search);
   const mode = params.get("mode") || "smart";
@@ -629,9 +645,7 @@ async function apiSuggestOutfits(req, res) {
   const condition = (params.get("condition") || "").toLowerCase();
   const temp = parseFloat(params.get("temp") || "NaN");
 
-  const userFilter = uid ? "AND user_id = $1" : "";
-  const qparams = uid ? [uid] : [];
-  const rows = await sql(`SELECT * FROM items WHERE active = true ${userFilter}`, qparams);
+  const rows = await sql("SELECT * FROM items WHERE active = true AND user_id = $1", [uid]);
   if (!rows.length) return json(res, 200, { outfits: [], message: "Add garments first" });
 
   const tops = rows.filter(i => i.part === "upperbody" || i.part === "wholebody_up");
@@ -809,6 +823,7 @@ async function handleApi(req, res) {
     if (req.method === "GET" && pathname === "/api/outfits") { await apiGetOutfits(req, res); return true; }
     if (req.method === "GET" && pathname === "/api/outfits/suggest") { await apiSuggestOutfits(req, res); return true; }
     if (req.method === "POST" && pathname === "/api/outfits") { await apiCreateOutfit(req, res); return true; }
+    if (req.method === "POST" && pathname === "/api/outfits/feedback") { await apiOutfitFeedback(req, res); return true; }
 
     const gDetail = pathname.match(/^\/api\/garments\/([^/]+)$/);
     if (gDetail) {

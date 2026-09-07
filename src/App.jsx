@@ -577,6 +577,7 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
+  const [suggestIndex, setSuggestIndex] = useState(0);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [selectedGarments, setSelectedGarments] = useState(new Set());
   const [outfitName, setOutfitName] = useState("");
@@ -647,41 +648,72 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
       const res = await fetch(`/api/outfits/suggest?${q}`, { headers });
       const data = await res.json();
       setSuggestions(data.outfits || []);
+      setSuggestIndex(0);
     } finally { setLoadingSuggestions(false); }
+  };
+
+  const rateSuggestion = async (s, liked) => {
+    let created = null;
+    if (liked) {
+      created = await onCreate({ name: s.name, occasion: s.occasion, garmentIds: s.garmentIds });
+    }
+    const headers = {};
+    if (currentUser) headers["x-user-id"] = currentUser.userId;
+    await fetch("/api/outfits/feedback", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        outfitId: created?.id || null,
+        liked,
+        occasion: s.occasion || null,
+        season: Array.isArray(s.season) ? (s.season[0] || null) : null,
+      }),
+    }).catch(() => {});
+    setSuggestions((cur) => cur.filter((x) => x !== s));
   };
 
   const renderCollage = (garmentIds) => {
     const set = garmentIds.map((id) => garmentsById[id]).filter(Boolean);
-    const tops = set.filter((g) => g.part === "upperbody" || g.part === "wholebody_up");
+    const outer = set.find((g) => g.part === "wholebody_up");
+    const tops = set.filter((g) => g.part === "upperbody");
     const bottoms = set.filter((g) => g.part === "lowerbody");
     const shoes = set.filter((g) => g.part === "shoes");
     const accs = set.filter((g) => g.part === "accessories_up");
 
     const img = (g, w) => g && (
       <div className="canvas-piece">
-        <OptimizedImage src={g.image} alt={g.name} sizes={`${w}px`} breakpoints={[w * 0.5, w, w * 1.4]} />
+        <OptimizedImage src={g.image} alt={g.name} sizes={`${w}px`} breakpoints={[Math.round(w * 0.5), w, Math.round(w * 1.4)]} />
       </div>
     );
 
+    if (!set.length) {
+      return <div className="canvas-stage"><div className="canvas-empty">No pieces</div></div>;
+    }
+
     return (
-      <div className="outfit-canvas">
-        <div className="canvas-main">
-          {tops.slice(0, 2).map((t, i) => (
-            <div key={t.id} className={`canvas-top ${i > 0 ? "canvas-layer" : ""}`}>{img(t, 130)}</div>
+      <div className="canvas-stage">
+        {outer && <div className="canvas-outer">{img(outer, 158)}</div>}
+        <div className="canvas-middle">
+          {tops.slice(0, 1).map((t) => (
+            <div key={t.id} className="canvas-slot canvas-top">{img(t, 128)}</div>
           ))}
           {bottoms.slice(0, 1).map((b) => (
-            <div key={b.id} className="canvas-bottom">{img(b, 110)}</div>
+            <div key={b.id} className="canvas-slot canvas-bottom">{img(b, 116)}</div>
           ))}
-          {!tops.length && !bottoms.length && <div className="canvas-empty">No pieces</div>}
+          {!tops.length && !bottoms.length && outer && (
+            <div className="canvas-slot canvas-top">{img(outer, 142)}</div>
+          )}
         </div>
-        <div className="canvas-side">
-          {accs.slice().reverse().map((a) => (
-            <div key={a.id} className="canvas-acc">{img(a, 46)}</div>
-          ))}
-          {shoes.slice(0, 1).map((s) => (
-            <div key={s.id} className="canvas-shoes">{img(s, 62)}</div>
-          ))}
-        </div>
+        {(shoes.length > 0 || accs.length > 0) && (
+          <div className="canvas-accents">
+            {shoes.slice(0, 1).map((s) => (
+              <div key={s.id} className="canvas-slot canvas-shoes">{img(s, 66)}</div>
+            ))}
+            {accs.slice(0, 3).map((a) => (
+              <div key={a.id} className="canvas-slot canvas-acc">{img(a, 42)}</div>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -768,21 +800,40 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
 
       {suggestions.length > 0 && (
         <section className="outfit-suggestions">
-          <h3>AI Suggestions</h3>
-          <div className="outfits-grid">
-            {suggestions.map((s, i) => (
-              <article key={i} className="outfit-card">
-                {renderCollage(s.garmentIds)}
-                <div className="outfit-card-body">
-                  <h4>{s.name}</h4>
-                  <small>{s.occasion}</small>
-                  <button className="primary-button" onClick={() => onCreate({ name: s.name, occasion: s.occasion, garmentIds: s.garmentIds })}>
-                    <Plus size={12} weight="bold" /> Save
+          <h3>AI Suggestions · {suggestIndex + 1} / {suggestions.length}</h3>
+          {(() => {
+            const s = suggestions[suggestIndex];
+            if (!s) {
+              return (
+                <div className="tinder-empty">
+                  <p>No quedan looks por valorar.</p>
+                  <button className="primary-button" onClick={handleSuggest}>
+                    <Shuffle size={14} weight="bold" /> Generar otros
                   </button>
                 </div>
-              </article>
-            ))}
-          </div>
+              );
+            }
+            return (
+              <div className="tinder-card">
+                <div className="tinder-visual">{renderCollage(s.garmentIds)}</div>
+                <div className="tinder-meta">
+                  <h4>{s.name}</h4>
+                  <small>{s.occasion}</small>
+                </div>
+                <div className="tinder-actions">
+                  <button className="tinder-skip" onClick={() => setSuggestIndex((i) => i + 1)} aria-label="Pasar" title="Pasar">
+                    <Shuffle size={18} weight="bold" />
+                  </button>
+                  <button className="tinder-dislike" onClick={() => rateSuggestion(s, false)} aria-label="No me gusta" title="No me gusta">
+                    <X size={22} weight="bold" />
+                  </button>
+                  <button className="tinder-like" onClick={() => rateSuggestion(s, true)} aria-label="Me gusta" title="Me gusta">
+                    <Check size={22} weight="bold" />
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </section>
       )}
 
@@ -1052,9 +1103,10 @@ export function App() {
       headers: authHeaders(),
       body: JSON.stringify(payload),
     });
-    if (!res.ok) { setError("Could not save outfit"); return; }
+    if (!res.ok) { setError("Could not save outfit"); return null; }
     const created = await res.json();
     setOutfits((cur) => [created, ...cur]);
+    return created;
   };
 
   const updateOutfit = async (id, payload) => {
