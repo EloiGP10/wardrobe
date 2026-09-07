@@ -969,6 +969,99 @@ button { font: inherit; }
 
 .outfits-actions { display: flex; gap: 8px; }
 
+.outfit-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 20px;
+  padding: 4px;
+  background: rgba(110, 48, 46, .06);
+  border-radius: 999px;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.outfit-tab {
+  border: none;
+  background: transparent;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition: background .15s ease, color .15s ease;
+}
+
+.outfit-tab:hover { color: var(--ink); }
+
+.outfit-tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.tab-badge {
+  background: rgba(255, 255, 255, .28);
+  border-radius: 999px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.outfit-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+}
+
+.outfit-empty-state p { margin: 0; max-width: 320px; line-height: 1.5; }
+
+.suggest-generate {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.tinder-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.reason-tag {
+  background: rgba(110, 48, 46, .07);
+  color: var(--ink);
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 999px;
+}
+
+.tinder-save {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: none;
+  background: #8ab4f8;
+  color: #fff;
+  box-shadow: 0 8px 18px -8px rgba(40, 94, 170, .6);
+}
+
 .outfits-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -1372,3 +1465,33 @@ button { font: inherit; }
 
 /* Dragging state */
 .app-shell.is-dragging { filter: brightness(0.95); }
+
+/* ─── Outfits mobile responsiveness ─────────────────────────────── */
+
+@media (max-width: 620px) {
+  .outfits-panel { padding: 18px 14px 90px; }
+
+  .outfit-tabs { width: 100%; }
+  .outfit-tab { flex: 1; justify-content: center; padding: 10px 8px; }
+
+  .suggest-controls {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .suggest-modes { flex-wrap: nowrap; overflow-x: auto; width: 100%; }
+  .suggest-mode { flex: 0 0 auto; }
+  .suggest-generate { align-self: stretch; }
+
+  .tinder-card { max-width: 100%; width: 100%; }
+  .tinder-actions { gap: 12px; }
+  .tinder-actions button { width: 50px; height: 50px; }
+  .tinder-skip { width: 40px; height: 40px; }
+
+  /* Collage con complementos/zapatillas: evita desbordes en móvil */
+  .canvas-stage.has-accents .canvas-middle { left: 0; right: 24%; padding-top: 1%; }
+  .canvas-stage.has-accents .canvas-outer { left: 0; right: 26%; }
+  .canvas-accents { top: 8%; right: 1%; bottom: 14%; gap: 4px; }
+  .canvas-shoes { width: 38%; }
+  .canvas-acc { width: 22%; }
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Plus, Trash, X, Sparkle, Shuffle } from "@phosphor-icons/react";
+import { Check, Plus, Trash, X, Sparkle, Shuffle, Bookmark } from "@phosphor-icons/react";
 import { OptimizedImage } from "./OptimizedImage.jsx";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
@@ -583,6 +583,7 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
   const [outfitName, setOutfitName] = useState("");
   const [outfitOccasion, setOutfitOccasion] = useState("casual");
   const garmentsById = useMemo(() => Object.fromEntries(items.map((g) => [g.id, g])), [items]);
+  const [outfitTab, setOutfitTab] = useState("guardados");
 
   const [mode, setMode] = useState("smart");
   const [mood, setMood] = useState("casual");
@@ -745,117 +746,146 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
       <header className="outfits-header">
         <h2>Outfits</h2>
         <div className="outfits-actions">
-          <button className="secondary-button" onClick={handleSuggest} disabled={loadingSuggestions}>
-            <Sparkle size={14} weight="bold" /> {loadingSuggestions ? "..." : "Generar"}
-          </button>
           <button className="primary-button" onClick={() => openBuilder(null)}>
-            <Plus size={14} weight="bold" /> New
+            <Plus size={14} weight="bold" /> Nuevo
           </button>
         </div>
       </header>
 
-      <section className="suggest-controls">
-        <div className="suggest-modes">
-          {[
-            { id: "smart", label: "Smart" },
-            { id: "random", label: "Random" },
-            { id: "mood", label: "Mood" },
-            { id: "color", label: "Color" },
-            { id: "weather", label: "Tiempo hoy" },
-          ].map((m) => (
-            <button key={m.id} type="button" className={`suggest-mode ${mode === m.id ? "active" : ""}`} onClick={() => setMode(m.id)}>
-              {m.label}
-            </button>
-          ))}
-        </div>
+      <nav className="outfit-tabs">
+        <button className={`outfit-tab ${outfitTab === "guardados" ? "active" : ""}`} onClick={() => setOutfitTab("guardados")}>
+          Guardados {outfits.length > 0 && <span className="tab-badge">{outfits.length}</span>}
+        </button>
+        <button className={`outfit-tab ${outfitTab === "sugerencias" ? "active" : ""}`} onClick={() => { setOutfitTab("sugerencias"); if (!suggestions.length) handleSuggest(); }}>
+          Sugerencias {suggestions.length > 0 && <span className="tab-badge">{suggestions.length}</span>}
+        </button>
+      </nav>
 
-        <div className="suggest-options">
-          {mode === "mood" && (
-            <select value={mood} onChange={(e) => setMood(e.target.value)} className="suggest-select">
-              <option value="casual">Casual</option>
-              <option value="smart">Arreglado</option>
-              <option value="formal">Formal</option>
-              <option value="sport">Deporte</option>
-            </select>
-          )}
-          {mode === "color" && (
-            <div className="color-choices">
-              {COLOR_CHOICES.map((c) => (
-                <button key={c} type="button" className={`color-dot ${chosenColor === c ? "active" : ""}`} style={{ background: c }} onClick={() => setChosenColor(c)} aria-label={`Color ${c}`} />
+      {outfitTab === "sugerencias" && (
+        <>
+          <section className="suggest-controls">
+            <div className="suggest-modes">
+              {[
+                { id: "smart", label: "Smart" },
+                { id: "random", label: "Random" },
+                { id: "mood", label: "Mood" },
+                { id: "color", label: "Color" },
+                { id: "weather", label: "Tiempo" },
+              ].map((m) => (
+                <button key={m.id} type="button" className={`suggest-mode ${mode === m.id ? "active" : ""}`} onClick={() => setMode(m.id)}>
+                  {m.label}
+                </button>
               ))}
-              <input type="color" value={chosenColor} onChange={(e) => setChosenColor(e.target.value)} className="color-picker" />
             </div>
-          )}
-          {mode === "weather" && (
-            <div className="weather-box">
-              {weatherState === "locating" || weatherState === "fetching" ? <span>Localizando...</span> :
-                weather ? <>
-                  <span className={`weather-icon weather-${weather.condition}`}>{"☀️🌥️🌧️🌨️"["clear cloudy rain snow".split(" ").indexOf(weather.condition)] || "🌡️"}</span>
-                  <span><strong>{weather.temp}°C</strong> {CONDITION_LABEL[weather.condition]}</span>
-                  {weather.wind > 10 && <span className="weather-wind">🍃 {weather.wind} km/h</span>}
-                </> : <button className="secondary-button" onClick={fetchWeather}>Usar mi ubicación</button>}
-            </div>
-          )}
-        </div>
-      </section>
 
-      {suggestions.length > 0 && (
-        <section className="outfit-suggestions">
-          <h3>Sugerencias · {suggestIndex + 1} / {suggestions.length}</h3>
-          {(() => {
-            const s = suggestions[suggestIndex];
-            if (!s) {
-              return (
-                <div className="tinder-empty">
-                  <p>No quedan looks por valorar.</p>
-                  <button className="primary-button" onClick={handleSuggest}>
-                    <Shuffle size={14} weight="bold" /> Generar otros
-                  </button>
+            <div className="suggest-options">
+              {mode === "mood" && (
+                <select value={mood} onChange={(e) => setMood(e.target.value)} className="suggest-select">
+                  <option value="casual">Casual</option>
+                  <option value="smart">Arreglado</option>
+                  <option value="formal">Formal</option>
+                  <option value="sport">Deporte</option>
+                </select>
+              )}
+              {mode === "color" && (
+                <div className="color-choices">
+                  {COLOR_CHOICES.map((c) => (
+                    <button key={c} type="button" className={`color-dot ${chosenColor === c ? "active" : ""}`} style={{ background: c }} onClick={() => setChosenColor(c)} aria-label={`Color ${c}`} />
+                  ))}
+                  <input type="color" value={chosenColor} onChange={(e) => setChosenColor(e.target.value)} className="color-picker" />
                 </div>
-              );
-            }
-            return (
-              <div className="tinder-card">
-                <div className="tinder-visual">{renderCollage(s.garmentIds)}</div>
-                <div className="tinder-meta">
-                  <h4>{s.name}</h4>
-                  <small>{s.occasion}</small>
+              )}
+              {mode === "weather" && (
+                <div className="weather-box">
+                  {weatherState === "locating" || weatherState === "fetching" ? <span>Localizando...</span> :
+                    weather ? <>
+                      <span className={`weather-icon weather-${weather.condition}`}>{"☀️🌥️🌧️🌨️"["clear cloudy rain snow".split(" ").indexOf(weather.condition)] || "🌡️"}</span>
+                      <span><strong>{weather.temp}°C</strong> {CONDITION_LABEL[weather.condition]}</span>
+                      {weather.wind > 10 && <span className="weather-wind">🍃 {weather.wind} km/h</span>}
+                    </> : <button className="secondary-button" onClick={fetchWeather}>Usar mi ubicación</button>}
                 </div>
-                <div className="tinder-actions">
-                  <button className="tinder-skip" onClick={() => setSuggestIndex((i) => i + 1)} aria-label="Pasar" title="Pasar">
-                    <Shuffle size={18} weight="bold" />
-                  </button>
-                  <button className="tinder-dislike" onClick={() => rateSuggestion(s, false)} aria-label="No me gusta" title="No me gusta">
-                    <X size={22} weight="bold" />
-                  </button>
-                  <button className="tinder-like" onClick={() => rateSuggestion(s, true)} aria-label="Me gusta" title="Me gusta">
-                    <Check size={22} weight="bold" />
-                  </button>
-                </div>
-              </div>
-            );
-          })()}
-        </section>
+              )}
+            </div>
+
+            <button className="secondary-button suggest-generate" onClick={handleSuggest} disabled={loadingSuggestions}>
+              <Sparkle size={14} weight="bold" /> {loadingSuggestions ? "Generando..." : "Generar"}
+            </button>
+          </section>
+
+          {suggestions.length > 0 ? (
+            <section className="outfit-suggestions">
+              <h3>Sugerencias · {suggestIndex + 1} / {suggestions.length}</h3>
+              {(() => {
+                const s = suggestions[suggestIndex];
+                if (!s) {
+                  return (
+                    <div className="tinder-empty">
+                      <p>No quedan looks por valorar.</p>
+                      <button className="primary-button" onClick={handleSuggest}>
+                        <Shuffle size={14} weight="bold" /> Generar otros
+                      </button>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="tinder-card">
+                    <div className="tinder-visual">{renderCollage(s.garmentIds)}</div>
+                    <div className="tinder-meta">
+                      <h4>{s.name}</h4>
+                      <small>{s.occasion}</small>
+                      {s.reasons?.length > 0 && (
+                        <div className="tinder-reasons">{s.reasons.map((r, i) => <span key={i} className="reason-tag">{r}</span>)}</div>
+                      )}
+                    </div>
+                    <div className="tinder-actions">
+                      <button className="tinder-skip" onClick={() => setSuggestIndex((i) => i + 1)} aria-label="Pasar" title="Pasar">
+                        <Shuffle size={18} weight="bold" />
+                      </button>
+                      <button className="tinder-dislike" onClick={() => rateSuggestion(s, false)} aria-label="No me gusta" title="No me gusta">
+                        <X size={22} weight="bold" />
+                      </button>
+                      <button className="tinder-save" onClick={() => rateSuggestion(s, true)} aria-label="Guardar outfit" title="Guardar outfit">
+                        <Bookmark size={22} weight="bold" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </section>
+          ) : (
+            <div className="outfit-empty-state">
+              <Sparkle size={32} weight="light" />
+              <p>Pulsa <strong>Generar</strong> para obtener ideas de outfits con tus prendas.</p>
+            </div>
+          )}
+        </>
       )}
 
-      {outfits.length === 0 && !loadingSuggestions ? (
-        <p className="status empty">No outfits yet. Compose your first look.</p>
-      ) : (
-        <div className="outfits-grid">
-          {outfits.map((o) => (
-            <article key={o.id} className="outfit-card">
-              {renderCollage(o.garmentIds || [])}
-              <div className="outfit-card-body">
-                <h4>{o.name}</h4>
-                {o.occasion && <small>{o.occasion}</small>}
-                <div className="outfit-card-actions">
-                  <button className="secondary-button" onClick={() => openBuilder(o.id)}>Edit</button>
-                  <button className="delete-button" onClick={() => onDelete(o.id)}><Trash size={12} weight="regular" /></button>
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
+      {outfitTab === "guardados" && (
+        <>
+          {outfits.length === 0 ? (
+            <div className="outfit-empty-state">
+              <Bookmark size={32} weight="light" />
+              <p>No tienes outfits guardados. Los outfits que guardes desde las sugerencias aparecerán aquí.</p>
+            </div>
+          ) : (
+            <div className="outfits-grid">
+              {outfits.map((o) => (
+                <article key={o.id} className="outfit-card">
+                  {renderCollage(o.garmentIds || [])}
+                  <div className="outfit-card-body">
+                    <h4>{o.name}</h4>
+                    {o.occasion && <small>{o.occasion}</small>}
+                    <div className="outfit-card-actions">
+                      <button className="secondary-button" onClick={() => openBuilder(o.id)}>Editar</button>
+                      <button className="delete-button" onClick={() => onDelete(o.id)}><Trash size={12} weight="regular" /></button>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {builderOpen && (
