@@ -406,10 +406,9 @@ async function apiOutfitFeedback(req, res) {
   const input = await parseBody(req);
   const { outfitId, liked, occasion, season, weather } = input;
 
-  if (outfitId) {
-    const outfit = await sqlOne("SELECT id FROM outfits WHERE id = $1 AND user_id = $2", [outfitId, uid]);
-    if (!outfit) return json(res, 404, { error: "Outfit not found" });
-  }
+  if (!outfitId) return json(res, 400, { error: "outfitId required" });
+  const outfit = await sqlOne("SELECT id FROM outfits WHERE id = $1 AND user_id = $2", [outfitId, uid]);
+  if (!outfit) return json(res, 404, { error: "Outfit not found" });
 
   await sql("DELETE FROM outfit_feedback WHERE outfit_id = $1", [outfitId]);
   const insert = await sql(
@@ -845,8 +844,10 @@ async function handleApi(req, res) {
 
     return false;
   } catch (err) {
+    const status = typeof err?.status === "number" ? err.status : 500;
     console.error("[wardrobe]", err.message);
-    json(res, 500, { error: err.message || "Internal server error" });
+    if (status >= 500) console.error(err.stack);
+    json(res, status, { error: err.message || "Internal server error" });
     return true;
   }
 }

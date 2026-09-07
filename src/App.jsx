@@ -653,22 +653,23 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
   };
 
   const rateSuggestion = async (s, liked) => {
-    let created = null;
     if (liked) {
-      created = await onCreate({ name: s.name, occasion: s.occasion, garmentIds: s.garmentIds });
+      const created = await onCreate({ name: s.name, occasion: s.occasion, garmentIds: s.garmentIds });
+      if (created?.id) {
+        const headers = {};
+        if (currentUser) headers["x-user-id"] = currentUser.userId;
+        await fetch("/api/outfits/feedback", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            outfitId: created.id,
+            liked: true,
+            occasion: s.occasion || null,
+            season: Array.isArray(s.season) ? (s.season[0] || null) : null,
+          }),
+        }).catch(() => {});
+      }
     }
-    const headers = {};
-    if (currentUser) headers["x-user-id"] = currentUser.userId;
-    await fetch("/api/outfits/feedback", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        outfitId: created?.id || null,
-        liked,
-        occasion: s.occasion || null,
-        season: Array.isArray(s.season) ? (s.season[0] || null) : null,
-      }),
-    }).catch(() => {});
     setSuggestions((cur) => cur.filter((x) => x !== s));
   };
 
