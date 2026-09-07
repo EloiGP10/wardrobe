@@ -81,21 +81,67 @@ async function removeWhiteBackground(buffer) {
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    const threshold = 240;
-    const alpha = Buffer.alloc(info.width * info.height);
+    const w = info.width;
+    const h = info.height;
+    const tolerance = 40;
+    const bgSet = new Uint8Array(w * h);
+    const queue = [];
 
-    for (let i = 0; i < info.width * info.height; i++) {
+    const isWhite = (i) => {
       const r = data[i * 3];
       const g = data[i * 3 + 1];
       const b = data[i * 3 + 2];
-      const isWhite = r >= threshold && g >= threshold && b >= threshold;
-      alpha[i] = isWhite ? 0 : 255;
+      return Math.max(r, g, b) - Math.min(r, g, b) <= tolerance && r >= 255 - tolerance;
+    };
+
+    for (let x = 0; x < w; x++) {
+      if (isWhite(x)) { bgSet[x] = 1; queue.push(x); }
+      if (isWhite((h - 1) * w + x)) { bgSet[(h - 1) * w + x] = 1; queue.push((h - 1) * w + x); }
+    }
+    for (let y = 0; y < h; y++) {
+      if (isWhite(y * w)) { bgSet[y * w] = 1; queue.push(y * w); }
+      if (isWhite(y * w + w - 1)) { bgSet[y * w + w - 1] = 1; queue.push(y * w + w - 1); }
+    }
+
+    const dirs = [1, -1, w, -w];
+    for (let qi = 0; qi < queue.length; qi++) {
+      const cur = queue[qi];
+      for (const d of dirs) {
+        const n = cur + d;
+        if (n < 0 || n >= bgSet.length) continue;
+        if (bgSet[n]) continue;
+        const nx = n % w;
+        if (Math.abs(nx - (cur % w)) > 1) continue;
+        if (isWhite(n)) { bgSet[n] = 1; queue.push(n); }
+      }
+    }
+
+    const alpha = Buffer.alloc(w * h);
+    for (let i = 0; i < w * h; i++) {
+      alpha[i] = bgSet[i] ? 0 : 255;
+    }
+
+    const feathered = Buffer.alloc(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (alpha[i] === 255) { feathered[i] = 255; continue; }
+        let nearBg = false;
+        for (let dy = -1; dy <= 1 && !nearBg; dy++) {
+          for (let dx = -1; dx <= 1 && !nearBg; dx++) {
+            const nx = x + dx, ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            if (data[(ny * w + nx) * 3] !== 255 && !bgSet[ny * w + nx] && alpha[ny * w + nx] === 255) nearBg = true;
+          }
+        }
+        feathered[i] = nearBg ? 128 : 0;
+      }
     }
 
     return await sharp(data, {
-      raw: { width: info.width, height: info.height, channels: 3 },
+      raw: { width: w, height: h, channels: 3 },
     })
-      .joinChannel(alpha)
+      .joinChannel(Buffer.from(feathered))
       .png()
       .toBuffer();
   } catch (e) {
@@ -527,13 +573,132 @@ async function apiDeleteOutfit(req, res, id) {
 async function apiSuggestOutfits(req, res) {
   const uid = getUserId(req);
   const url = new URL(req.url, "http://localhost");
-  const season = url.searchParams.get("season") || "mild";
+  const params = new URLSearchParams(url.search);
+  const mode = params.get("mode") || "smart";
+  const season = params.get("season") || "mild";
+  const color = params.get("color") || "";
+  const mood = (params.get("mood") || "").toLowerCase();
+  const condition = (params.get("condition") || "").toLowerCase();
+  const temp = parseFloat(params.get("temp") || "NaN");
+
   const userFilter = uid ? "AND user_id = $1" : "";
-  const params = uid ? [uid] : [];
-  const rows = await sql(`SELECT * FROM items WHERE active = true ${userFilter}`, params);
-  if (!rows.length) return json(res, 200, { outfits: uid ? [] : [], message: uid ? "Add garments first" : "Login to see suggestions" });
-  const suggestions = generateOutfitSuggestions(rows, { season });
-  json(res, 200, { outfits: suggestions });
+  const qparams = uid ? [uid] : [];
+  const rows = await sql(`SELECT * FROM items WHERE active = true ${userFilter}`, qparams);
+  if (!rows.length) return json(res, 200, { outfits: [], message: "Add garments first" });
+
+  const tops = rows.filter(i => i.part === "upperbody" || i.part === "wholebody_up");
+  const bottoms = rows.filter(i => i.part === "lowerbody");
+  const shoes = rows.filter(i => i.part === "shoes");
+  const accs = rows.filter(i => i.part === "accessories_up");
+  if (!tops.length || !bottoms.length) return json(res, 200, { outfits: [], message: "Need at least one top and one bottom" });
+
+  const buildOutfit = (top, bottom) => {
+    const bestShoes = shoes.reduce((best, shoe) => {
+      let s = scoreColorCombo(top, shoe) + scoreColorCombo(bottom, shoe);
+      s += scoreStyleMatch(top, shoe) + scoreStyleMatch(bottom, shoe);
+      s += scoreFormality(top, shoe);
+      return s > best.score ? { item: shoe, score: s } : best;
+    }, { item: null, score: -999 });
+    const bestAcc = accs.reduce((best, acc) => {
+      let s = scoreColorCombo(top, acc) + scoreColorCombo(bottom, acc);
+      s += scoreStyleMatch(top, acc);
+      return s > best.score ? { item: acc, score: s } : best;
+    }, { item: null, score: -999 });
+
+    const garmentIds = [top.id, bottom.id];
+    if (bestShoes.item) garmentIds.push(bestShoes.item.id);
+    if (bestAcc.item) garmentIds.push(bestAcc.item.id);
+
+    const avgFormality = ((top.formality_level || 3) + (bottom.formality_level || 3)) / 2;
+    let occasionLabel = "casual";
+    if (avgFormality >= 4) occasionLabel = "formal";
+    else if (avgFormality >= 3) occasionLabel = "smart casual";
+    else if (avgFormality <= 1.5) occasionLabel = "sport";
+
+    let score = scoreColorCombo(top, bottom) + scoreStyleMatch(top, bottom)
+      + scoreSeasonMatch(top, bottom) + scoreOccasionMatch(top, bottom)
+      + scoreFormality(top, bottom) + scoreWarmth(top, bottom, season)
+      + (bestShoes.item ? bestShoes.score * 0.3 : 0) + (bestAcc.item ? bestAcc.score * 0.2 : 0);
+
+    const reasons = [];
+    if (scoreColorCombo(top, bottom) >= 9) reasons.push("great color match");
+    if (scoreStyleMatch(top, bottom) >= 6) reasons.push("matching styles");
+    if (scoreFormality(top, bottom) >= 6) reasons.push("similar formality");
+
+    return { top, bottom, bestShoes, bestAcc, garmentIds, occasion: occasionLabel, score: Math.round(score * 100) / 100, reasons };
+  };
+
+  let ranked = [];
+
+  if (mode === "random") {
+    const pool = [];
+    const pairCount = Math.min(20, tops.length * bottoms.length || 1);
+    for (let n = 0; n < pairCount; n++) {
+      const t = tops[Math.floor(Math.random() * tops.length)];
+      const b = bottoms[Math.floor(Math.random() * bottoms.length)];
+      pool.push(buildOutfit(t, b));
+    }
+    ranked = pool.sort(() => Math.random() - 0.5);
+  } else if (mode === "color" && color) {
+    ranked = tops.flatMap(top => bottoms.map(bottom => {
+      const o = buildOutfit(top, bottom);
+      const closest = [top, bottom].map(g => g.color ? 100 / (1 + (colorDistance(g.color, color) / 60)) : 0);
+      o.score = o.score * 0.6 + Math.max(...closest) * 4;
+      if (Math.max(...closest) > 30) o.reasons.unshift(`matches ${color} palette`);
+      return o;
+    })).sort((a, b) => b.score - a.score);
+  } else if (mode === "mood") {
+    const targetFormality = mood === "formal" || mood === "elegant" ? 4 : mood === "smart" ? 3 : mood === "sport" ? 1 : 2;
+    ranked = tops.flatMap(top => bottoms.map(bottom => {
+      const o = buildOutfit(top, bottom);
+      const too = Math.abs((top.formality_level || 3) - targetFormality);
+      const bho = Math.abs((bottom.formality_level || 3) - targetFormality);
+      o.score = o.score * 0.7 - (too + bho) * 6;
+      return o;
+    })).sort((a, b) => b.score - a.score);
+  } else if (mode === "weather" && condition) {
+    const condToWeather = { clear: ["warm"], sunny: ["hot", "warm"], cloudy: ["mild"], rain: ["cool", "rainy"], snow: ["cold"], thunderground: ["cool"] };
+    const wantedWeather = condToWeather[condition] || [];
+    const tempIndex = isNaN(temp) ? null : (temp >= 28 ? "hot" : temp >= 22 ? "warm" : temp >= 15 ? "mild" : temp >= 7 ? "cool" : "cold");
+    ranked = tops.flatMap(top => bottoms.map(bottom => {
+      const o = buildOutfit(top, bottom);
+      let bonus = 0;
+      for (const g of [top, bottom]) {
+        const gw = (g.weather || []).map(x => x.toLowerCase());
+        if (wantedWeather.some(w => gw.includes(w))) bonus += 3;
+        if (tempIndex && (g.warmth_level || 3) >= (tempIndex === "hot" ? 3 : tempIndex === "cold" ? 4 : 3)) bonus += 2;
+      }
+      o.score += bonus;
+      if (wantedWeather.some(w => (top.weather || []).map(x => x.toLowerCase()).includes(w) || (bottom.weather || []).map(x => x.toLowerCase()).includes(w))) {
+        o.reasons.push(`suits ${condition} weather`);
+      }
+      return o;
+    })).sort((a, b) => b.score - a.score);
+  } else {
+    ranked = tops.flatMap(top => bottoms.map(bottom => buildOutfit(top, bottom)))
+      .sort((a, b) => b.score - a.score);
+  }
+
+  const suggestions = [];
+  const seen = new Set();
+  for (const o of ranked) {
+    const key = [...o.garmentIds].sort().join(",");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    suggestions.push({
+      name: `${o.top.name} + ${o.bottom.name}`,
+      occasion: o.occasion,
+      garmentIds: o.garmentIds,
+      score: o.score,
+      reasons: o.reasons,
+      mode,
+      season: [...new Set([...(o.top.season || []), ...(o.bottom.season || [])])],
+      weather: [...new Set([...(o.top.weather || []), ...(o.bottom.weather || [])])],
+    });
+    if (suggestions.length >= 10) break;
+  }
+
+  json(res, 200, { outfits: suggestions, context: { mode, season, color, mood, condition, temp } });
 }
 
 async function apiLogin(req, res) {

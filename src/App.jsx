@@ -573,7 +573,7 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
   );
 }
 
-function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete }) {
+function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUser }) {
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -583,33 +583,107 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete }) {
   const [outfitOccasion, setOutfitOccasion] = useState("casual");
   const garmentsById = useMemo(() => Object.fromEntries(items.map((g) => [g.id, g])), [items]);
 
-  const renderCollage = (garmentIds) => {
-    const set = garmentIds.map((id) => garmentsById[id]).filter(Boolean);
-    const top = set.find((g) => g.part === "upperbody" || g.part === "wholebody_up");
-    const bottom = set.find((g) => g.part === "lowerbody");
-    const shoe = set.find((g) => g.part === "shoes");
-    const acc = set.find((g) => g.part === "accessories_up");
-    return (
-      <div className="outfit-collage-card">
-        {top && <div className="outfit-piece outfit-piece-top"><OptimizedImage src={top.image} alt={top.name} sizes="120px" breakpoints={[80, 120, 180]} /></div>}
-        <div className="outfit-piece-row">
-          {bottom && <div className="outfit-piece outfit-piece-bottom"><OptimizedImage src={bottom.image} alt={bottom.name} sizes="100px" breakpoints={[60, 100, 140]} /></div>}
-          <div className="outfit-piece-stack">
-            {shoe && <div className="outfit-piece outfit-piece-shoes"><OptimizedImage src={shoe.image} alt={shoe.name} sizes="60px" breakpoints={[40, 60, 90]} /></div>}
-            {acc && <div className="outfit-piece outfit-piece-acc"><OptimizedImage src={acc.image} alt={acc.name} sizes="60px" breakpoints={[40, 60, 90]} /></div>}
-          </div>
-        </div>
-      </div>
-    );
+  const [mode, setMode] = useState("smart");
+  const [mood, setMood] = useState("casual");
+  const [chosenColor, setChosenColor] = useState("#4f8cff");
+  const [weather, setWeather] = useState(null);
+  const [weatherState, setWeatherState] = useState("idle");
+
+  const COLOR_CHOICES = ["#000000", "#4f8cff", "#e63946", "#2a9d3f", "#f4a261", "#7b2ff7", "#8d99ae", "#ffffff", "#795548"];
+
+  const fetchWeather = useCallback(async () => {
+    setWeatherState("locating");
+    const coords = await new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve(null);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => resolve(null),
+        { timeout: 6000 }
+      );
+    });
+    if (!coords) { setWeatherState("manual"); return; }
+    try {
+      setWeatherState("fetching");
+      const res = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lon}&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m`
+      );
+      const data = await res.json();
+      const code = data.current?.weather_code;
+      const condition = code === 0 || code === 1 ? "clear" : (code === 2 || code === 3) ? "cloudy" : (code >= 51 && code <= 67) ? "rain" : (code >= 71 && code <= 86) ? "snow" : "cloudy";
+      setWeather({
+        temp: Math.round(data.current?.temperature_2m || 15),
+        condition,
+        humidity: data.current?.relative_humidity_2m,
+        wind: Math.round(data.current?.wind_speed_10m || 0),
+      });
+      setWeatherState("ready");
+    } catch {
+      setWeatherState("manual");
+    }
+  }, []);
+
+  const seasonFromDate = () => {
+    const m = new Date().getMonth();
+    return (m >= 11 || m <= 1) ? "winter" : (m <= 4) ? "spring" : (m <= 7) ? "summer" : "autumn";
   };
+
+  const CONDITION_LABEL = { clear: "Despejado", cloudy: "Nublado", rain: "Lluvia", snow: "Nieve" };
 
   const handleSuggest = async () => {
     setLoadingSuggestions(true);
     try {
-      const res = await fetch("/api/outfits/suggest");
+      const q = new URLSearchParams({ mode, season: seasonFromDate() });
+      if (mode === "mood") q.set("mood", mood);
+      if (mode === "color") q.set("color", chosenColor);
+      if (mode === "weather") {
+        if (!weather) await fetchWeather();
+        if (weather) {
+          q.set("condition", weather.condition);
+          q.set("temp", String(weather.temp));
+        }
+      }
+      const headers = {};
+      if (currentUser) headers["x-user-id"] = currentUser.userId;
+      const res = await fetch(`/api/outfits/suggest?${q}`, { headers });
       const data = await res.json();
       setSuggestions(data.outfits || []);
     } finally { setLoadingSuggestions(false); }
+  };
+
+  const renderCollage = (garmentIds) => {
+    const set = garmentIds.map((id) => garmentsById[id]).filter(Boolean);
+    const tops = set.filter((g) => g.part === "upperbody" || g.part === "wholebody_up");
+    const bottoms = set.filter((g) => g.part === "lowerbody");
+    const shoes = set.filter((g) => g.part === "shoes");
+    const accs = set.filter((g) => g.part === "accessories_up");
+
+    const img = (g, w) => g && (
+      <div className="canvas-piece">
+        <OptimizedImage src={g.image} alt={g.name} sizes={`${w}px`} breakpoints={[w * 0.5, w, w * 1.4]} />
+      </div>
+    );
+
+    return (
+      <div className="outfit-canvas">
+        <div className="canvas-main">
+          {tops.slice(0, 2).map((t, i) => (
+            <div key={t.id} className={`canvas-top ${i > 0 ? "canvas-layer" : ""}`}>{img(t, 130)}</div>
+          ))}
+          {bottoms.slice(0, 1).map((b) => (
+            <div key={b.id} className="canvas-bottom">{img(b, 110)}</div>
+          ))}
+          {!tops.length && !bottoms.length && <div className="canvas-empty">No pieces</div>}
+        </div>
+        <div className="canvas-side">
+          {accs.slice().reverse().map((a) => (
+            <div key={a.id} className="canvas-acc">{img(a, 46)}</div>
+          ))}
+          {shoes.slice(0, 1).map((s) => (
+            <div key={s.id} className="canvas-shoes">{img(s, 62)}</div>
+          ))}
+        </div>
+      </div>
+    );
   };
 
   const openBuilder = (id) => {
@@ -639,13 +713,58 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete }) {
         <h2>Outfits</h2>
         <div className="outfits-actions">
           <button className="secondary-button" onClick={handleSuggest} disabled={loadingSuggestions}>
-            <Sparkle size={14} weight="bold" /> {loadingSuggestions ? "..." : "Suggest"}
+            <Sparkle size={14} weight="bold" /> {loadingSuggestions ? "..." : "Generar"}
           </button>
           <button className="primary-button" onClick={() => openBuilder(null)}>
             <Plus size={14} weight="bold" /> New
           </button>
         </div>
       </header>
+
+      <section className="suggest-controls">
+        <div className="suggest-modes">
+          {[
+            { id: "smart", label: "Smart" },
+            { id: "random", label: "Random" },
+            { id: "mood", label: "Mood" },
+            { id: "color", label: "Color" },
+            { id: "weather", label: "Tiempo hoy" },
+          ].map((m) => (
+            <button key={m.id} type="button" className={`suggest-mode ${mode === m.id ? "active" : ""}`} onClick={() => setMode(m.id)}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="suggest-options">
+          {mode === "mood" && (
+            <select value={mood} onChange={(e) => setMood(e.target.value)} className="suggest-select">
+              <option value="casual">Casual</option>
+              <option value="smart">Arreglado</option>
+              <option value="formal">Formal</option>
+              <option value="sport">Deporte</option>
+            </select>
+          )}
+          {mode === "color" && (
+            <div className="color-choices">
+              {COLOR_CHOICES.map((c) => (
+                <button key={c} type="button" className={`color-dot ${chosenColor === c ? "active" : ""}`} style={{ background: c }} onClick={() => setChosenColor(c)} aria-label={`Color ${c}`} />
+              ))}
+              <input type="color" value={chosenColor} onChange={(e) => setChosenColor(e.target.value)} className="color-picker" />
+            </div>
+          )}
+          {mode === "weather" && (
+            <div className="weather-box">
+              {weatherState === "locating" || weatherState === "fetching" ? <span>Localizando...</span> :
+                weather ? <>
+                  <span className={`weather-icon weather-${weather.condition}`}>{"☀️🌥️🌧️🌨️"["clear cloudy rain snow".split(" ").indexOf(weather.condition)] || "🌡️"}</span>
+                  <span><strong>{weather.temp}°C</strong> {CONDITION_LABEL[weather.condition]}</span>
+                  {weather.wind > 10 && <span className="weather-wind">🍃 {weather.wind} km/h</span>}
+                </> : <button className="secondary-button" onClick={fetchWeather}>Usar mi ubicación</button>}
+            </div>
+          )}
+        </div>
+      </section>
 
       {suggestions.length > 0 && (
         <section className="outfit-suggestions">
@@ -1047,6 +1166,7 @@ export function App() {
         <OutfitsPanel
           items={items}
           outfits={outfits}
+          currentUser={currentUser}
           onCreate={createOutfit}
           onUpdate={updateOutfit}
           onDelete={deleteOutfit}
