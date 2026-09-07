@@ -943,6 +943,7 @@ export function App() {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
+    if (currentUser) return;
     let active = true;
     (async () => {
       try {
@@ -957,7 +958,7 @@ export function App() {
       } catch {}
     })();
     return () => { active = false; };
-  }, []);
+  }, [currentUser]);
 
   const authHeaders = useCallback(() => {
     const headers = { "Content-Type": "application/json" };
