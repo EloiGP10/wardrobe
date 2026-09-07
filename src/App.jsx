@@ -1015,6 +1015,12 @@ export function App() {
       const loadedOutfits = oRes.ok ? await oRes.json() : [];
       const edits = readEdits();
       const deleted = readDeletedItems();
+      const activeIds = new Set(loadedItems.map((i) => i.id));
+      for (const id of deleted) {
+        if (activeIds.has(id)) {
+          fetch(`/api/garments/${id}`, { method: "DELETE", headers }).catch(() => {});
+        }
+      }
       const visibleItems = loadedItems.filter((item) => !deleted.has(item.id));
       setItems(visibleItems.map((item) => ({ ...item, ...(edits[item.id] || {}) })));
       setOutfits(loadedOutfits);
@@ -1102,15 +1108,9 @@ export function App() {
   };
 
   const deleteItem = async (id) => {
-    if (id.startsWith("import-")) {
-      try {
-        const response = await fetch(`/api/garments/${id}`, { method: "DELETE", headers: authHeaders() });
-        if (!response.ok && response.status !== 404) throw new Error("Could not delete the imported item.");
-      } catch (requestError) {
-        setError(requestError.message);
-        return;
-      }
-    }
+    try {
+      await fetch(`/api/garments/${id}`, { method: "DELETE", headers: authHeaders() });
+    } catch {}
     setItems((current) => current.filter((item) => item.id !== id));
     removePersistedEdit(id);
     persistDeletedItem(id);

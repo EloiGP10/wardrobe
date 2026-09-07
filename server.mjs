@@ -923,7 +923,8 @@ function serveStatic(req, res) {
     ".webp": "image/webp", ".svg": "image/svg+xml", ".woff2": "font/woff2",
     ".ico": "image/x-icon",
   }[extname(filePath).toLowerCase()] || "application/octet-stream";
-  res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=86400" });
+  const cache = filePath.endsWith("index.html") ? "no-cache" : "public, max-age=86400";
+  res.writeHead(200, { "Content-Type": mime, "Cache-Control": cache });
   res.end(readFileSync(filePath));
 }
 
