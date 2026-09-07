@@ -1006,9 +1006,10 @@ export function App() {
   const reload = useCallback(async () => {
     try {
       const headers = authHeaders();
+      const fetchOpts = { headers, cache: "no-store" };
       const [gRes, oRes] = await Promise.all([
-        fetch("/api/garments", { ...headers, cache: "no-store" }),
-        fetch("/api/outfits", { ...headers, cache: "no-store" }),
+        fetch("/api/garments", fetchOpts),
+        fetch("/api/outfits", fetchOpts),
       ]);
       const loadedItems = gRes.ok ? await gRes.json() : [];
       const loadedOutfits = oRes.ok ? await oRes.json() : [];
