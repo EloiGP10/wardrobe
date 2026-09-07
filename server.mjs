@@ -120,6 +120,13 @@ function mapItem(g) {
 // ─── Background Removal ─────────────────────────────────────────────────────────
 
 const PART_ALLOWED = ["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"];
+const FIT_ALLOWED = ["slim", "regular", "loose", "oversized", "petite", "tall"];
+const GENDER_ALLOWED = ["male", "female", "unisex"];
+
+function clampScore(value, fallback = 3) {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : fallback;
+}
 
 function sanitizeMetadata(meta) {
   const m = { ...(meta || {}) };
@@ -130,6 +137,11 @@ function sanitizeMetadata(meta) {
   if (!Array.isArray(m.occasion)) m.occasion = [];
   if (!Array.isArray(m.details)) m.details = [];
   if (!Array.isArray(m.weather)) m.weather = [];
+  m.gender = GENDER_ALLOWED.includes(m.gender) ? m.gender : null;
+  m.fit = FIT_ALLOWED.includes(m.fit) ? m.fit : null;
+  m.warmth_level = clampScore(m.warmth_level);
+  m.formality_level = clampScore(m.formality_level);
+  m.trend_score = clampScore(m.trend_score);
   return m;
 }
 
@@ -794,7 +806,7 @@ async function apiRegister(req, res) {
 async function apiLibrary(req, res, filename) {
   const storageFile = await storageRead(filename);
   if (storageFile) {
-    res.writeHead(200, { "Content-Type": storageFile.mime, "Cache-Control": "public, max-age=31536000, immutable" });
+    res.writeHead(200, { "Content-Type": storageFile.mime, "Cache-Control": "public, max-age=86400" });
     return res.end(storageFile.body);
   }
   const filePath = resolve(UPLOAD_DIR, filename);
@@ -803,7 +815,7 @@ async function apiLibrary(req, res, filename) {
     return res.end(JSON.stringify({ error: "Not found" }));
   }
   const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp" }[extname(filename).toLowerCase()] || "image/png";
-  res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=31536000, immutable" });
+  res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=86400" });
   res.end(readFileSync(filePath));
 }
 
