@@ -13,8 +13,16 @@ if (existsSync(dest) && statSync(dest).size > 1_000_000) {
 
 mkdirSync(dirname(dest), { recursive: true });
 console.log(`[fetch-model] downloading ${url}`);
-const res = await fetch(url);
-if (!res.ok || !res.body) throw new Error(`download failed: ${res.status}`);
-await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
+const sep = url.includes("?") ? "&" : "?";
+const busted = `${url}${sep}cb=${Date.now()}`;
+const res = await fetch(busted);
+if (!res.ok || !res.body) {
+  console.warn(`[fetch-model] cache-busted download failed (${res.status}), retrying clean URL`);
+  const retry = await fetch(url);
+  if (!retry.ok || !retry.body) throw new Error(`download failed: ${retry.status}`);
+  await pipeline(Readable.fromWeb(retry.body), createWriteStream(dest));
+} else {
+  await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
+}
 if (!statSync(dest).size) throw new Error("downloaded file is empty");
 console.log(`[fetch-model] saved ${dest}`);
