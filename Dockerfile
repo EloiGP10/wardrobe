@@ -5,7 +5,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 --branch main https://github.com/EloiGP10/wardrobe.git .
+ARG CACHEBUST
+RUN echo "git ${CACHEBUST}" && git clone --depth 1 --branch main https://github.com/EloiGP10/wardrobe.git .
 
 RUN npm ci && npm run build && node scripts/fetch-model.mjs
 
