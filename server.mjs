@@ -15,6 +15,10 @@ const DATA_DIR = resolve(process.cwd(), "data");
 const UPLOAD_DIR = resolve(DATA_DIR, "imported");
 if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
 
+const SUPABASE_PUBLIC_URL = (process.env.SUPABASE_PUBLIC_URL || "https://supabase-eloigfamily.duckdns.org").replace(/\/+$/, "");
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "wardrobe";
+
 const db = new pg.Pool({ connectionString: DATABASE_URL, max: 5 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -40,6 +44,49 @@ async function sql(query, params = []) {
 async function sqlOne(query, params = []) {
   const rows = await sql(query, params);
   return rows[0] || null;
+}
+
+// ─── Supabase Storage ─────────────────────────────────────────────────────────
+
+function supabaseStorageHead() {
+  return {
+    apikey: SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+  };
+}
+
+async function uploadToStorage(filename, buffer, contentType = "image/png") {
+  if (!SUPABASE_SERVICE_KEY) return false;
+  try {
+    const res = await fetch(`${SUPABASE_PUBLIC_URL}/storage/v1/object/${SUPABASE_BUCKET}/${filename}`, {
+      method: "POST",
+      headers: { ...supabaseStorageHead(), "Content-Type": contentType },
+      body: buffer,
+    });
+    if (!res.ok) {
+      console.error(`[wardrobe][storage] upload ${filename} failed: ${res.status}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`[wardrobe][storage] upload ${filename} error: ${err.message}`);
+    return false;
+  }
+}
+
+async function storageRead(filename) {
+  if (!SUPABASE_SERVICE_KEY) return null;
+  try {
+    const res = await fetch(`${SUPABASE_PUBLIC_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${filename}`, {
+      headers: supabaseStorageHead(),
+    });
+    if (!res.ok) return null;
+    const mime = res.headers.get("content-type") || "image/png";
+    return { mime, body: Buffer.from(await res.arrayBuffer()) };
+  } catch (err) {
+    console.error(`[wardrobe][storage] read ${filename} error: ${err.message}`);
+    return null;
+  }
 }
 
 function getUserId(req) {
@@ -451,6 +498,7 @@ async function apiImportGarment(req, res) {
   const buffer = Buffer.from(imageBase64, "base64");
   const cleanBuffer = await removeWhiteBackground(buffer);
   writeFileSync(imagePath, cleanBuffer);
+  await uploadToStorage(filename, cleanBuffer);
 
   const rows = await sql(`INSERT INTO items
     (slug, name, part, color, secondary_color, palette, tags, image_url, thumbnail_url,
@@ -731,6 +779,11 @@ async function apiRegister(req, res) {
 }
 
 async function apiLibrary(req, res, filename) {
+  const storageFile = await storageRead(filename);
+  if (storageFile) {
+    res.writeHead(200, { "Content-Type": storageFile.mime, "Cache-Control": "public, max-age=31536000, immutable" });
+    return res.end(storageFile.body);
+  }
   const filePath = resolve(UPLOAD_DIR, filename);
   if (!existsSync(filePath)) {
     res.writeHead(404, { "Content-Type": "application/json" });
