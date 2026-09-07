@@ -688,11 +688,11 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
     );
 
     if (!set.length) {
-      return <div className="canvas-stage"><div className="canvas-empty">No pieces</div></div>;
+      return <div className="canvas-stage"><div className="canvas-empty">Sin prendas</div></div>;
     }
 
     return (
-      <div className="canvas-stage">
+      <div className={`canvas-stage${(shoes.length > 0 || accs.length > 0) ? " has-accents" : ""}`}>
         {outer && <div className="canvas-outer">{img(outer, 158)}</div>}
         <div className="canvas-middle">
           {tops.slice(0, 1).map((t) => (
@@ -734,7 +734,7 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
   };
 
   const handleSaveOutfit = async () => {
-    const payload = { name: outfitName || `Look ${outfits.length + 1}`, occasion: outfitOccasion, garmentIds: [...selectedGarments] };
+    const payload = { name: outfitName || `Conjunto ${outfits.length + 1}`, occasion: outfitOccasion, garmentIds: [...selectedGarments] };
     if (editingId) await onUpdate(editingId, payload);
     else await onCreate(payload);
     setBuilderOpen(false);
@@ -801,7 +801,7 @@ function OutfitsPanel({ items, outfits, onCreate, onUpdate, onDelete, currentUse
 
       {suggestions.length > 0 && (
         <section className="outfit-suggestions">
-          <h3>AI Suggestions · {suggestIndex + 1} / {suggestions.length}</h3>
+          <h3>Sugerencias · {suggestIndex + 1} / {suggestions.length}</h3>
           {(() => {
             const s = suggestions[suggestIndex];
             if (!s) {
@@ -941,6 +941,23 @@ export function App() {
   const [authMode, setAuthMode] = useState("login");
   const [showAuth, setShowAuth] = useState(false);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/guest", { credentials: "include" });
+        if (!active || !res.ok) return;
+        const data = await res.json();
+        if (data?.userId) {
+          const user = { userId: data.userId, username: data.username, displayName: data.displayName };
+          setCurrentUser(user);
+          localStorage.setItem(USER_KEY, JSON.stringify(user));
+        }
+      } catch {}
+    })();
+    return () => { active = false; };
+  }, []);
 
   const authHeaders = useCallback(() => {
     const headers = { "Content-Type": "application/json" };

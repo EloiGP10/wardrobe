@@ -1032,44 +1032,59 @@ button { font: inherit; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 30%;
+  justify-content: center;
+  padding-top: 2%;
 }
 
 .canvas-slot {
   display: flex;
   align-items: center;
   justify-content: center;
+  min-height: 0;
 }
 
-.canvas-top { width: 62%; }
-.canvas-bottom { width: 55%; margin-top: -14px; }
+.canvas-top { flex: 0 0 auto; width: 62%; height: 44%; }
+.canvas-bottom { flex: 0 0 auto; width: 55%; height: 48%; margin-top: -6px; }
 
 .canvas-accents {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  top: 10%;
+  right: 3%;
+  bottom: 12%;
+  left: auto;
   z-index: 3;
   display: flex;
+  flex-direction: column;
   align-items: flex-end;
-  justify-content: center;
-  gap: 5px;
-  padding: 0 8px 7px;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
-.canvas-shoes { width: 22%; }
-.canvas-acc { width: 12%; }
+.canvas-stage.has-accents .canvas-middle {
+  left: 4%;
+  right: 18%;
+}
+
+.canvas-stage.has-accents .canvas-outer {
+  left: 2%;
+  right: 20%;
+}
+
+.canvas-shoes { width: 30%; }
+.canvas-acc { width: 18%; }
 
 .canvas-piece {
   width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .canvas-piece img {
-  width: 100%;
-  height: auto;
+  height: 100%;
+  width: auto;
+  max-width: 100%;
   object-fit: contain;
   filter: drop-shadow(0 10px 14px rgba(30, 22, 14, .22));
 }

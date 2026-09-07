@@ -5,6 +5,7 @@ import pg from "pg";
 import dotenv from "dotenv";
 import sharp from "sharp";
 
+import { randomUUID } from "node:crypto";
 import { removeBackground } from "./lib/matting.mjs";
 
 dotenv.config();
@@ -101,6 +102,44 @@ function requireUser(req) {
   return uid;
 }
 
+const GUEST_COOKIE = "wardrobe_uid";
+
+function parseCookies(req) {
+  const out = {};
+  for (const part of (req.headers.cookie || "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq !== -1) {
+      const k = part.slice(0, eq).trim();
+      const v = part.slice(eq + 1).trim();
+      try { out[k] = decodeURIComponent(v); } catch { out[k] = v; }
+    }
+  }
+  return out;
+}
+
+async function apiGuestUser(req, res) {
+  const headerUid = getUserId(req);
+  if (headerUid) {
+    const u = await sqlOne("SELECT * FROM users WHERE id = $1", [headerUid]);
+    if (u) return json(res, 200, { userId: u.id, username: u.username, displayName: u.display_name });
+    return json(res, 200, { userId: headerUid, username: "", displayName: "" });
+  }
+  const uid = parseCookies(req)[GUEST_COOKIE];
+  if (uid) {
+    const u = await sqlOne("SELECT * FROM users WHERE id = $1", [uid]);
+    if (u) return json(res, 200, { userId: u.id, username: u.username, displayName: u.display_name });
+  }
+  const rows = await sql(
+    "INSERT INTO users (username, password_hash, display_name) VALUES ($1, '', 'Invitado') RETURNING *",
+    [`guest_${randomUUID().slice(0, 12)}`]
+  );
+  res.setHeader(
+    "Set-Cookie",
+    `${GUEST_COOKIE}=${encodeURIComponent(rows[0].id)}; HttpOnly; Path=/; Max-Age=31536000; SameSite=Lax`
+  );
+  json(res, 200, { userId: rows[0].id, username: rows[0].username, displayName: rows[0].display_name });
+}
+
 function mapItem(g) {
   return {
     id: g.id, name: g.name, part: g.part, color: g.color,
@@ -154,31 +193,31 @@ async function removeWhiteBackground(buffer) {
 async function analyzeGarmentWithGemini(imageBase64, mimeType = "image/png", modelName = "gemini-3.6-flash") {
   if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not configured");
 
-  const prompt = `Analyze this clothing item image and extract ALL of the following metadata as JSON. Be as precise as possible. Return ONLY valid JSON, no markdown.
+  const prompt = `Analiza esta imagen de prenda y extrae TODA la siguiente metadatos como JSON. Sé lo más preciso posible. Devuelve SOLAMENTE JSON válido, sin markdown. TODOS los campos de texto libre (name, description, tags, brand) DEBEN estar en español de España (tú/vosotros). Para los campos con listas fijas usa EXACTAMENTE los tokens en inglés que se indican a continuación.
 
 {
-  "name": "descriptive name (e.g. 'Blue Cotton Oxford Shirt')",
+  "name": "nombre descriptivo en español (ej. 'Camisa azul de algodón Oxford')",
   "part": "upperbody|wholebody_up|lowerbody|accessories_up|shoes",
   "gender": "male|female|unisex",
-  "color": "hex code of dominant color (e.g. #2c5f8a)",
-  "secondary_color": "hex code of secondary color or null",
-  "palette": ["up to 5 hex codes of colors found"],
-  "style": ["array of styles from: casual, formal, sporty, elegant, streetwear, bohemian, minimalist, classic, preppy, vintage, luxury, relaxed, trendy, professional, romantic"],
-  "season": ["array from: spring, summer, autumn, winter"],
-  "occasion": ["array from: casual, formal, work, party, sport, beach, evening, everyday, date, travel, outdoor"],
-  "material": "detected material (e.g. cotton, denim, leather, silk, wool, polyester, linen, velvet, chiffon, jersey, cashmere, suede, nylon)",
-  "pattern": "detected pattern (e.g. solid, striped, plaid, floral, polka_dot, geometric, abstract, camo, tie_dye, paisley, houndstooth, checkered)",
+  "color": "código hex del color dominante (ej. #2c5f8a)",
+  "secondary_color": "código hex del color secundario o null",
+  "palette": ["hasta 5 códigos hex de los colores detectados"],
+  "style": ["array de estilos usando tokens: casual, formal, sporty, elegant, streetwear, bohemian, minimalist, classic, preppy, vintage, luxury, relaxed, trendy, professional, romantic"],
+  "season": ["array usando tokens: spring, summer, autumn, winter"],
+  "occasion": ["array usando tokens: casual, formal, work, party, sport, beach, evening, everyday, date, travel, outdoor"],
+  "material": "material detectado en español (ej. algodón, mezclilla, cuero, seda, lana, poliéster, lino, terciopelo, encaje, piqué, satén, nailon)",
+  "pattern": "estampado detectado en español (ej. liso, rayas, cuadros, floral, lunares, geométrico, abstracto, camuflaje, batik, estampado)",
   "fit": "slim|regular|loose|oversized|petite|tall",
   "neckline": "crew_neck|v_neck|polo|henley|turtleneck|boat_neck|square_neck|off_shoulder|collared|zippered|halter|none",
   "length": "crop|regular|long|maxi|mini|ankle|knee|thigh|calf",
-  "details": ["array of notable features: buttons, zipper, pockets, embroidery, ruffles, belt, hood, drawstring, pleats, lace, sequins, fringes, patches, logo, rivets, stitching"],
-  "weather": ["array from: hot, warm, mild, cool, cold, rainy, windy"],
-  "warmth_level": "1-5 scale (1=very light like tank top, 5=very warm like heavy coat)",
-  "formality_level": "1-5 scale (1=very casual like gym shorts, 5=very formal like tuxedo)",
-  "trend_score": "1-5 scale based on current fashion trends",
-  "brand": "detected brand name or null if not visible",
-  "description": "brief 1-2 sentence description of the garment",
-  "tags": ["array of relevant tags for searching and matching"]
+  "details": ["array de detalles en español: botones, cremallera, bolsillos, bordado, volantes, cinturón, capucha, cordón, pliegues, encaje, lentejuelas, flecos, parches, logo, remaches, costuras"],
+  "weather": ["array usando tokens: hot, warm, mild, cool, cold, rainy, windy"],
+  "warmth_level": "escala 1-5 (1=muy ligera como camiseta, 5=muy cálida como abrigo grueso)",
+  "formality_level": "escala 1-5 (1=muy informal como pantalón de chandal, 5=muy formal como esmoquin)",
+  "trend_score": "escala 1-5 según tendencias actuales",
+  "brand": "nombre de la marca detectada o null si no es visible",
+  "description": "breve descripción de 1-2 oraciones en español",
+  "tags": ["array de etiquetas relevantes en español para búsqueda y coincidencia"]
 }`;
 
   const controller = new AbortController();
@@ -210,7 +249,7 @@ async function analyzeGarmentWithGemini(imageBase64, mimeType = "image/png", mod
 }
 
 const GEMINI_FALLBACK = {
-  name: "Imported piece",
+  name: "Prenda importada",
   part: "upperbody",
   gender: "unisex",
   color: null,
@@ -344,18 +383,18 @@ function generateOutfitSuggestions(items, context = {}) {
 
       const colorScore = scoreColorCombo(top, bottom);
       total += colorScore;
-      if (colorScore >= 9) reasons.push("great color match");
+      if (colorScore >= 9) reasons.push("gran combinación de color");
 
       const styleScore = scoreStyleMatch(top, bottom);
       total += styleScore;
-      if (styleScore >= 6) reasons.push("matching styles");
+      if (styleScore >= 6) reasons.push("estilos que combinan");
 
       total += scoreSeasonMatch(top, bottom);
       total += scoreOccasionMatch(top, bottom);
 
       const formScore = scoreFormality(top, bottom);
       total += formScore;
-      if (formScore >= 6) reasons.push("similar formality");
+      if (formScore >= 6) reasons.push("etiqueta similar");
 
       const bestShoes = shoes.reduce((best, shoe) => {
         let s = scoreColorCombo(top, shoe) + scoreColorCombo(bottom, shoe);
@@ -382,8 +421,8 @@ function generateOutfitSuggestions(items, context = {}) {
 
       const avgFormality = ((top.formality_level || 3) + (bottom.formality_level || 3)) / 2;
       let occasionLabel = "casual";
-      if (avgFormality >= 4) occasionLabel = "formal";
-      else if (avgFormality >= 3) occasionLabel = "smart casual";
+      if (avgFormality >= 4) occasionLabel = "elegante";
+      else if (avgFormality >= 3) occasionLabel = "semi-formal";
       else if (avgFormality <= 1.5) occasionLabel = "sport";
 
       suggestions.push({
@@ -570,9 +609,10 @@ async function apiGetOutfits(req, res) {
   const rows = await sql("SELECT * FROM outfits WHERE user_id = $1 ORDER BY created_at DESC", [uid]);
   const result = await Promise.all(rows.map(async o => {
     const items = await sql(
-      "SELECT item_id FROM outfit_items WHERE outfit_id = $1 ORDER BY position",
-      [o.id]
+      "SELECT oi.item_id FROM outfit_items oi JOIN items i ON i.id = oi.item_id WHERE oi.outfit_id = $1 AND i.active = true AND i.user_id = $2 ORDER BY oi.position",
+      [o.id, uid]
     );
+    if (!items.length) return null;
     return {
       id: o.id, name: o.name, occasion: o.occasion, season: o.season,
       isFavorite: o.is_favorite, uses: o.uses,
@@ -582,7 +622,7 @@ async function apiGetOutfits(req, res) {
       createdAt: o.created_at, updatedAt: o.updated_at,
     };
   }));
-  json(res, 200, result);
+  json(res, 200, result.filter(Boolean));
 }
 
 async function apiCreateOutfit(req, res) {
@@ -591,7 +631,7 @@ async function apiCreateOutfit(req, res) {
   const rows = await sql(
     `INSERT INTO outfits (name, occasion, season, weather, formality_level, style, score, user_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [input.name || "New outfit", input.occasion || null, input.season || null,
+    [input.name || "Nuevo outfit", input.occasion || null, input.season || null,
      input.weather || [], input.formalityLevel || null, input.style || [], input.score || null, uid]
   );
   const outfit = rows[0];
@@ -684,9 +724,9 @@ async function apiSuggestOutfits(req, res) {
 
     const avgFormality = ((top.formality_level || 3) + (bottom.formality_level || 3)) / 2;
     let occasionLabel = "casual";
-    if (avgFormality >= 4) occasionLabel = "formal";
-    else if (avgFormality >= 3) occasionLabel = "smart casual";
-    else if (avgFormality <= 1.5) occasionLabel = "sport";
+    if (avgFormality >= 4) occasionLabel = "elegante";
+    else if (avgFormality >= 3) occasionLabel = "semi-formal";
+    else if (avgFormality <= 1.5) occasionLabel = "deportivo";
 
     let score = scoreColorCombo(top, bottom) + scoreStyleMatch(top, bottom)
       + scoreSeasonMatch(top, bottom) + scoreOccasionMatch(top, bottom)
@@ -694,9 +734,9 @@ async function apiSuggestOutfits(req, res) {
       + (bestShoes.item ? bestShoes.score * 0.3 : 0) + (bestAcc.item ? bestAcc.score * 0.2 : 0);
 
     const reasons = [];
-    if (scoreColorCombo(top, bottom) >= 9) reasons.push("great color match");
-    if (scoreStyleMatch(top, bottom) >= 6) reasons.push("matching styles");
-    if (scoreFormality(top, bottom) >= 6) reasons.push("similar formality");
+    if (scoreColorCombo(top, bottom) >= 9) reasons.push("gran combinación de color");
+    if (scoreStyleMatch(top, bottom) >= 6) reasons.push("estilos que combinan");
+    if (scoreFormality(top, bottom) >= 6) reasons.push("etiqueta similar");
 
     return { top, bottom, bestShoes, bestAcc, garmentIds, occasion: occasionLabel, score: Math.round(score * 100) / 100, reasons };
   };
@@ -717,7 +757,7 @@ async function apiSuggestOutfits(req, res) {
       const o = buildOutfit(top, bottom);
       const closest = [top, bottom].map(g => g.color ? 100 / (1 + (colorDistance(g.color, color) / 60)) : 0);
       o.score = o.score * 0.6 + Math.max(...closest) * 4;
-      if (Math.max(...closest) > 30) o.reasons.unshift(`matches ${color} palette`);
+      if (Math.max(...closest) > 30) o.reasons.unshift(`encaja con la paleta ${color}`);
       return o;
     })).sort((a, b) => b.score - a.score);
   } else if (mode === "mood") {
@@ -731,6 +771,7 @@ async function apiSuggestOutfits(req, res) {
     })).sort((a, b) => b.score - a.score);
   } else if (mode === "weather" && condition) {
     const condToWeather = { clear: ["warm"], sunny: ["hot", "warm"], cloudy: ["mild"], rain: ["cool", "rainy"], snow: ["cold"], thunderground: ["cool"] };
+    const CONDITION_LABEL = { clear: "despejado", sunny: "despejado", cloudy: "nublado", rain: "lluvia", snow: "nieve", thunderground: "tormenta" };
     const wantedWeather = condToWeather[condition] || [];
     const tempIndex = isNaN(temp) ? null : (temp >= 28 ? "hot" : temp >= 22 ? "warm" : temp >= 15 ? "mild" : temp >= 7 ? "cool" : "cold");
     ranked = tops.flatMap(top => bottoms.map(bottom => {
@@ -743,7 +784,7 @@ async function apiSuggestOutfits(req, res) {
       }
       o.score += bonus;
       if (wantedWeather.some(w => (top.weather || []).map(x => x.toLowerCase()).includes(w) || (bottom.weather || []).map(x => x.toLowerCase()).includes(w))) {
-        o.reasons.push(`suits ${condition} weather`);
+        o.reasons.push(`ideal para tiempo ${CONDITION_LABEL[condition] || condition}`);
       }
       return o;
     })).sort((a, b) => b.score - a.score);
@@ -829,6 +870,7 @@ async function handleApi(req, res) {
     if (req.method === "GET" && pathname === "/api/status") { await apiStatus(req, res); return true; }
     if (req.method === "POST" && pathname === "/api/auth/login") { await apiLogin(req, res); return true; }
     if (req.method === "POST" && pathname === "/api/auth/register") { await apiRegister(req, res); return true; }
+    if (req.method === "GET" && pathname === "/api/auth/guest") { await apiGuestUser(req, res); return true; }
     if (req.method === "GET" && pathname === "/api/garments") { await apiGetGarments(req, res); return true; }
     if (req.method === "POST" && pathname === "/api/garments/import") { await apiImportGarment(req, res); return true; }
     if (req.method === "GET" && pathname === "/api/outfits") { await apiGetOutfits(req, res); return true; }
