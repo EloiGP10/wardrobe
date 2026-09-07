@@ -274,8 +274,15 @@ const GEMINI_FALLBACK = {
   tags: [],
 };
 
+function classifyGeminiError(err) {
+  const msg = String(err?.message || "");
+  if (/\b429\b|RESOURCE_EXHAUSTED|quota/i.test(msg)) return { reason: "quota", detail: "Cuota gratuita de Gemini agotada. Vuelve a intentarlo más tarde o completa los datos a mano." };
+  if (/\b404\b|NOT_FOUND|no longer available|not found/i.test(msg)) return { reason: "model", detail: "Los modelos de Gemini configurados no están disponibles para esta API key. Completa los datos a mano o actualiza la lista de fallback." };
+  return { reason: "generic", detail: "Gemini no pudo analizar la foto. Completa los datos a mano para importarla." };
+}
+
 async function analyzeGarmentSafe(imageBase64, mimeType) {
-  const models = ["gemini-3.6-flash", "gemini-3-flash", "gemini-2.5-flash"];
+  const models = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.5-flash"];
   let lastErr;
   for (const model of models) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -291,6 +298,9 @@ async function analyzeGarmentSafe(imageBase64, mimeType) {
   console.error(`[import][gemini] all models failed (${models.join(", ")}): ${lastErr?.message}`);
   const e = new Error("ANALYSIS_FAILED");
   e.code = "ANALYSIS_FAILED";
+  const info = classifyGeminiError(lastErr);
+  e.reason = info.reason;
+  e.detail = info.detail;
   throw e;
 }
 
@@ -637,7 +647,7 @@ async function apiImportGarment(req, res) {
       try { writeFileSync(`${UPLOAD_DIR}/pending/${filename}`, removeWhiteBackground ? await removeWhiteBackground(buffer) : buffer); }
       catch (e) { writeFileSync(`${UPLOAD_DIR}/pending/${filename}`, buffer); }
       const pendingPath = `/api/library/pending/${filename}`;
-      return json(res, 409, { error: "ANALYSIS_FAILED", needsManualMetadata: true, pendingPath });
+      return json(res, 409, { error: "ANALYSIS_FAILED", needsManualMetadata: true, pendingPath, reason: err?.reason || "generic", detail: err?.detail || "Gemini no pudo analizar esta foto. Completa los datos mínimos para importarla." });
     }
     return json(res, 502, { error: err.message });
   }

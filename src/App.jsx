@@ -1043,7 +1043,8 @@ function ManualImportModal({ pendingManual, onSubmit, onCancel, submitting }) {
         </div>
         {pendingManual?.imageBase64 && <img className="manual-thumb" src={`data:image/png;base64,${pendingManual.imageBase64}`} alt={pendingManual?.fileName || "prenda"} />}
         {pendingManual?.fileName && <p className="manual-file">{pendingManual.fileName}</p>}
-        <p className="manual-hint">Gemini no pudo analizar esta foto. Indica los datos mínimos para importarla.</p>
+        <p className="manual-hint">{pendingManual?.detail || "Gemini no pudo analizar esta foto. Indica los datos mínimos para importarla."}</p>
+        {pendingManual?.reason === "quota" && <p className="manual-hint manual-hint-quota">Si vuelve a fallar, espera hasta mañana: la capa gratuita de Gemini se restablece cada 24 h.</p>}
 
         <label className="manual-field">
           <span>Tipo de prenda</span>
@@ -1240,7 +1241,7 @@ export function App() {
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           if (err.needsManualMetadata) {
-            setPendingManual({ fileName: file.name, pendingPath: err.pendingPath, imageBase64: base64 });
+            setPendingManual({ fileName: file.name, pendingPath: err.pendingPath, imageBase64: base64, reason: err.reason, detail: err.detail });
             cancelImportRef.current = true;
             break;
           }
