@@ -177,16 +177,16 @@ function AuthForm({ mode, onLogin, onRegister, onSwitch }) {
   return (
     <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {mode === "register" && (
-        <input type="text" placeholder="Display name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} />
+        <input type="text" placeholder="Nombre para mostrar" value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} />
       )}
-      <input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} required style={inputStyle} />
-      <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required style={inputStyle} />
+      <input type="text" placeholder="Usuario" value={username} onChange={(e) => setUsername(e.target.value)} required style={inputStyle} />
+      <input type="password" placeholder="Contraseña" value={password} onChange={(e) => setPassword(e.target.value)} required style={inputStyle} />
       {error && <p style={{ color: "var(--status-error)", fontSize: 13, margin: 0 }}>{error}</p>}
       <button type="submit" className="primary-button" disabled={loading} style={{ marginTop: 4 }}>
-        {loading ? "..." : mode === "login" ? "Sign In" : "Create Account"}
+        {loading ? "..." : mode === "login" ? "Iniciar sesión" : "Crear cuenta"}
       </button>
       <button type="button" onClick={onSwitch} style={{ background: "none", border: "none", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}>
-        {mode === "login" ? "No account? Register" : "Have an account? Sign In"}
+        {mode === "login" ? "¿No tienes cuenta? Regístrate" : "¿Ya tienes cuenta? Inicia sesión"}
       </button>
     </form>
   );
@@ -1149,7 +1149,7 @@ export function App() {
       {showAuth && (
         <div className="import-drop-overlay" onClick={() => setShowAuth(false)}>
           <div className="import-drop-target" style={{ maxWidth: 360, textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ marginBottom: 16 }}>{authMode === "login" ? "Sign In" : "Create Account"}</h2>
+            <h2 style={{ marginBottom: 16 }}>{authMode === "login" ? "Iniciar sesión" : "Crear cuenta"}</h2>
             <AuthForm
               mode={authMode}
               onLogin={login}
@@ -1163,11 +1163,14 @@ export function App() {
         <span style={{ fontWeight: 600 }}>Wardrobe</span>
         {currentUser ? (
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            {(currentUser.username?.startsWith("guest_") || !currentUser.username) && (
+              <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => { setAuthMode("login"); setShowAuth(true); }}>Iniciar sesión</button>
+            )}
             <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{currentUser.displayName}</span>
-            <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={logout}>Logout</button>
+            <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={logout}>Cerrar sesión</button>
           </div>
         ) : (
-          <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => { setAuthMode("login"); setShowAuth(true); }}>Sign In</button>
+          <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => { setAuthMode("login"); setShowAuth(true); }}>Iniciar sesión</button>
         )}
       </header>
       <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleImport(e.target.files); e.target.value = ""; }} />
