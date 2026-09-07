@@ -636,8 +636,9 @@ async function apiCreateOutfit(req, res) {
   );
   const outfit = rows[0];
   if (Array.isArray(input.garmentIds) && input.garmentIds.length) {
+    const groups = input.garmentIds.map((_, i) => `($${i * 3 + 1},$${i * 3 + 2},$${i * 3 + 3})`).join(",");
     await sql(
-      `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3})`).join(",")}`,
+      `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${groups}`,
       input.garmentIds.flatMap((gid, i) => [outfit.id, gid, i])
     );
   }
@@ -662,8 +663,9 @@ async function apiUpdateOutfit(req, res, id) {
   if ("garmentIds" in input) {
     await sql("DELETE FROM outfit_items WHERE outfit_id = $1", [id]);
     if (Array.isArray(input.garmentIds) && input.garmentIds.length) {
+      const groups = input.garmentIds.map((_, i) => `($${i * 3 + 1},$${i * 3 + 2},$${i * 3 + 3})`).join(",");
       await sql(
-        `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${input.garmentIds.map((_, i) => `($1,$${i * 2 + 2},$${i * 2 + 3})`).join(",")}`,
+        `INSERT INTO outfit_items (outfit_id, item_id, position) VALUES ${groups}`,
         input.garmentIds.flatMap((gid, i) => [id, gid, i])
       );
     }
